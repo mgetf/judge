@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
+use maud::{html, Markup, PreEscaped, DOCTYPE};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
@@ -142,27 +143,50 @@ async fn authorize(State(st): State<MockState>, Query(q): Query<AuthorizeQ>) -> 
         )
             .into_response();
     }
-    let mut buttons = String::new();
-    for u in &st.cfg.users {
-        let href = format!(
-            "/oauth2/approve?user_id={}&redirect_uri={}&state={}",
-            urlencoding::encode(&u.id),
-            urlencoding::encode(&q.redirect_uri),
-            urlencoding::encode(q.state.as_deref().unwrap_or("")),
-        );
-        buttons.push_str(&format!(
-            "<p><a data-testid=\"continue-{}\" href=\"{href}\">Continue as {}</a></p>",
-            esc(&u.username),
-            esc(&u.username)
-        ));
+    authorize_page(&st.cfg.users, &q.redirect_uri, q.state.as_deref()).into_response()
+}
+
+const MOCK_STYLES: &str = r#"
+html,body { margin:0; min-height:100%; background:#313338; color:#f2f3f5;
+  font: 16px/1.45 "gg sans", "Helvetica Neue", sans-serif; }
+main { max-width: 22rem; margin: 12vh auto; padding: 1.5rem 1.4rem 1.7rem;
+  background:#2b2d31; border-radius: 8px; }
+h1 { font-size: 1.2rem; margin: 0 0 0.35rem; }
+.sub { color:#b5bac1; font-size: 0.9rem; margin: 0 0 1.1rem; }
+a { display:block; padding: 0.55rem 0.7rem; margin: 0.35rem 0; background:#5865f2;
+  color:#fff; text-decoration:none; border-radius: 4px; text-align:center; }
+a:hover { background:#4752c4; }
+"#;
+
+fn authorize_page(users: &[MockUser], redirect_uri: &str, state: Option<&str>) -> Markup {
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                style { (PreEscaped(MOCK_STYLES)) }
+            }
+            body {
+                main {
+                    h1 data-testid="mock-discord" { "Mock Discord" }
+                    p.sub { "Pick a guild member to continue." }
+                    @for u in users {
+                        @let href = format!(
+                            "/oauth2/approve?user_id={}&redirect_uri={}&state={}",
+                            urlencoding::encode(&u.id),
+                            urlencoding::encode(redirect_uri),
+                            urlencoding::encode(state.unwrap_or("")),
+                        );
+                        p {
+                            a data-testid=(format!("continue-{}", u.username)) href=(href) {
+                                "Continue as " (u.username)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    Html(format!(
-        "<!doctype html><html><body>\
-         <h1 data-testid=\"mock-discord\">Mock Discord</h1>\
-         {buttons}\
-         </body></html>"
-    ))
-    .into_response()
 }
 
 #[derive(Deserialize)]
@@ -307,11 +331,4 @@ fn member_json(u: &MockUser) -> serde_json::Value {
         "roles": u.roles,
         "nick": null,
     })
-}
-
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }

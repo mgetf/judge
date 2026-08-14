@@ -1,6 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{IntoResponse, Redirect, Response};
+use maud::Markup;
 use axum::routing::{get, post};
 use axum::{Form, Router};
 use serde::Deserialize;
@@ -41,8 +42,8 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-fn html_ok(body: String) -> Response {
-    Html(body).into_response()
+fn html_ok(body: Markup) -> Response {
+    body.into_response()
 }
 
 async fn viewer(state: &AppState, headers: &HeaderMap) -> Option<Principal> {
@@ -232,7 +233,7 @@ async fn show_case(
     let Some(case) = g.cases.get(&cid) else {
         return AppError::NotFound.into_response();
     };
-    html_ok(html::case_page(who.as_ref(), case, None))
+    html_ok(html::case_page(who.as_ref(), case, None, &g.principals))
 }
 
 #[derive(Deserialize)]
@@ -497,19 +498,7 @@ async fn show_policy(
     let Some(p) = g.policies.get(&pid) else {
         return AppError::NotFound.into_response();
     };
-    let mut versions = String::new();
-    for v in &p.versions {
-        versions.push_str(&format!(
-            "<li>case {} — {}</li>",
-            v.enacted_by_case,
-            html::esc(&v.body)
-        ));
-    }
-    let _ = versions;
-    html_ok(html::flash_page(
-        who.as_ref(),
-        &format!("policy {} ({} versions)", p.id, p.versions.len()),
-    ))
+    html_ok(html::policy_page(who.as_ref(), p))
 }
 
 async fn show_log(State(state): State<AppState>, headers: HeaderMap) -> Response {

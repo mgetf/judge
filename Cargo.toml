@@ -10,6 +10,7 @@ default-run = "judge"
 [dependencies]
 axum = { version = "0.8", features = ["form", "query", "macros"] }
 hex = "0.4"
+maud = { version = "0.27", features = ["axum"] }
 hmac = "0.12"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
