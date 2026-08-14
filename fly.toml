@@ -11,7 +11,7 @@ primary_region = 'iad'
 [env]
   JUDGE_BIND = '0.0.0.0:8080'
   JUDGE_DATA_DIR = '/data'
-  JUDGE_CONFIG = '/app/config.json'
+  JUDGE_CONFIG = '/data/config.json'
   JUDGE_PUBLIC_URL = 'https://mgetf-judge.fly.dev'
   PORT = '8080'
 
