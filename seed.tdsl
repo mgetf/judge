@@ -1,0 +1,808 @@
+jsonl/reducer/durable/jsbuilder/eval stack (tommystack)
+ai assisted dispute adjudicator
+discord login oauth
+
+//! A governance engine as an event-sourced state machine.
+//!
+//! Design stance:
+//!   * The LOG is the history. Every attempted act is appended, accepted or not.
+//!   * The REDUCER is the constitution. Legitimacy = "the reducer accepted it."
+//!     There is no side channel; if it didn't fold into state, it didn't happen.
+//!   * A CASE is the unit of decision. Cases move through explicit phases,
+//!     and every transition is an event with an actor attached.
+//!   * Voting is pairwise preference with strength (ratios), aggregated by a
+//!     random-walk score (Rank Centrality-lite). No clout weights on people;
+//!     franchise is scoped per-case (the mandate), and strength lives in the
+//!     judgment (the ratio), not the judge.
+//!   * AI participants are first-class but non-sovereign: they file notes,
+//!     they never vote, and their acts are permanently marked.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+
+pub type Ts = i64; // ms since epoch
+pub type PrincipalId = String;
+pub type CaseId = String;
+pub type OutcomeId = String; // local to a case, e.g. "demote", "warn", "no-action"
+pub type PolicyId = String;  // e.g. "moderation/slur-hard-mute-1wk"
+
+// ---------------------------------------------------------------------------
+// Principals
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Role {
+    Member,
+    Admin,
+    /// AI clerk: may file ClerkNotes, may never vote, open, or close.
+    Clerk { model: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct Principal {
+    pub id: PrincipalId,
+    pub role: Role,
+    pub registered_ts: Ts,
+}
+
+// ---------------------------------------------------------------------------
+// Decision kinds and their constitutional rules
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionKind {
+    /// Day-to-day mod action review. Fast, low quorum.
+    Routine,
+    /// Hire / fire / demote a person. Subject must be heard (or window lapse).
+    Personnel,
+    /// Enact or amend a standing policy (becomes citable precedent).
+    Policy,
+    /// Change the rules of the rules (quorums, kinds, roles).
+    Constitutional,
+    /// A case about a closed case. Verdict "vacate" nullifies the target.
+    Appeal,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Rules {
+    /// Minimum distinct human voters across the case's vote set.
+    pub quorum: usize,
+    /// If Some, subject must be notified and given this long to respond
+    /// before deliberation may open (unless they respond sooner).
+    pub response_window_ms: Option<i64>,
+    /// Winner's score must exceed runner-up by this factor, else no verdict.
+    pub min_margin: f64,
+}
+
+pub const fn rules_for(kind: DecisionKind) -> Rules {
+    match kind {
+        DecisionKind::Routine => Rules { quorum: 1, response_window_ms: None,                 min_margin: 1.0 },
+        DecisionKind::Personnel => Rules { quorum: 3, response_window_ms: Some(48 * 3600_000), min_margin: 1.15 },
+        DecisionKind::Policy => Rules { quorum: 3, response_window_ms: None,                 min_margin: 1.10 },
+        DecisionKind::Constitutional => Rules { quorum: 5, response_window_ms: None,          min_margin: 1.50 },
+        DecisionKind::Appeal => Rules { quorum: 3, response_window_ms: None,                  min_margin: 1.25 },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Case internals: nested, durable, append-only within
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Phase {
+    /// Evidence and outcomes accumulate; mandate is granted.
+    Intake,
+    /// Subject has been formally notified (Personnel only).
+    Noticed,
+    /// Voting is open.
+    Deliberation,
+    /// Closed with a verdict snapshot. Immutable except by Appeal.
+    Closed,
+    /// Closed without verdict (quorum or margin failed).
+    Lapsed,
+    /// Verdict nullified by a successful appeal. History remains.
+    Vacated,
+}
+
+#[derive(Debug, Clone)]
+pub struct Evidence {
+    pub ts: Ts,
+    pub filed_by: PrincipalId,
+    pub label: String,        // "audit-tm-move"
+    pub body: String,         // claim + link to raw artifact
+}
+
+#[derive(Debug, Clone)]
+pub struct Statement {
+    pub ts: Ts,
+    pub by: PrincipalId,
+    pub body: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Outcome {
+    pub id: OutcomeId,
+    pub proposed_by: PrincipalId,
+    pub body: String,
+    /// If this outcome wins a Policy case, enact under this id.
+    pub enacts_policy: Option<PolicyId>,
+}
+
+/// One pairwise judgment: "prefer `a` over `b` at strength a_w : b_w, because…"
+#[derive(Debug, Clone)]
+pub struct PrefVote {
+    pub ts: Ts,
+    pub voter: PrincipalId,
+    pub a: OutcomeId,
+    pub b: OutcomeId,
+    pub a_w: u32,
+    pub b_w: u32,
+    /// Mandatory. Rulings are reasons, not tallies.
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClerkNoteKind {
+    /// Neutral restatement of filed material.
+    Summary,
+    /// "Statement X conflicts with evidence Y."
+    Contradiction,
+    /// "Policy P / closed case C bears on this."
+    PrecedentLink,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClerkNote {
+    pub ts: Ts,
+    pub clerk: PrincipalId,
+    pub kind: ClerkNoteKind,
+    pub body: String,
+    pub cites: Vec<String>, // evidence labels, policy ids, case ids
+}
+
+/// Frozen at close. The verdict is a snapshot, never a live ranking.
+#[derive(Debug, Clone)]
+pub struct Verdict {
+    pub ts: Ts,
+    pub closed_by: PrincipalId,
+    pub ordering: Vec<(OutcomeId, f64)>, // best-first, with scores
+    pub winner: OutcomeId,
+    pub distinct_voters: usize,
+    pub margin: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct Case {
+    pub id: CaseId,
+    pub kind: DecisionKind,
+    pub phase: Phase,
+    pub opened_by: PrincipalId,
+    pub opened_ts: Ts,
+    pub brief: String,
+    /// The accused / affected person, for Personnel. Never in the mandate.
+    pub subject: Option<PrincipalId>,
+    /// For Appeal: the case whose verdict is challenged.
+    pub target_case: Option<CaseId>,
+    /// Who may vote here. Scoped franchise instead of weighted clout.
+    pub mandate: BTreeSet<PrincipalId>,
+    pub evidence: Vec<Evidence>,
+    pub notified_ts: Option<Ts>,
+    pub response: Option<Statement>,
+    pub outcomes: BTreeMap<OutcomeId, Outcome>,
+    pub votes: Vec<PrefVote>,
+    pub clerk_notes: Vec<ClerkNote>,
+    pub cited_policies: BTreeSet<PolicyId>,
+    pub verdict: Option<Verdict>,
+}
+
+// ---------------------------------------------------------------------------
+// Policies: living precedent
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct PolicyVersion {
+    pub ts: Ts,
+    pub body: String,
+    pub enacted_by_case: CaseId,
+}
+
+#[derive(Debug, Clone)]
+pub struct Policy {
+    pub id: PolicyId,
+    /// Newest last. Amendments append; nothing is rewritten.
+    pub versions: Vec<PolicyVersion>,
+    /// Cases that cited this policy (auto-indexed by the reducer).
+    pub cited_in: BTreeSet<CaseId>,
+    pub repealed: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Events — the only way anything happens
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub enum Event {
+    PrincipalRegistered { ts: Ts, id: PrincipalId, role: Role },
+
+    CaseOpened {
+        ts: Ts, id: CaseId, kind: DecisionKind, opened_by: PrincipalId,
+        brief: String, subject: Option<PrincipalId>, target_case: Option<CaseId>,
+    },
+    MandateGranted { ts: Ts, case: CaseId, who: PrincipalId, by: PrincipalId },
+    MandateRevoked { ts: Ts, case: CaseId, who: PrincipalId, by: PrincipalId },
+    EvidenceFiled { ts: Ts, case: CaseId, by: PrincipalId, label: String, body: String },
+    SubjectNotified { ts: Ts, case: CaseId, by: PrincipalId },
+    ResponseFiled { ts: Ts, case: CaseId, by: PrincipalId, body: String },
+    OutcomeProposed {
+        ts: Ts, case: CaseId, by: PrincipalId, id: OutcomeId,
+        body: String, enacts_policy: Option<PolicyId>,
+    },
+    PolicyCited { ts: Ts, case: CaseId, by: PrincipalId, policy: PolicyId },
+    DeliberationOpened { ts: Ts, case: CaseId, by: PrincipalId },
+    VoteCast {
+        ts: Ts, case: CaseId, voter: PrincipalId,
+        a: OutcomeId, b: OutcomeId, a_w: u32, b_w: u32, reason: String,
+    },
+    ClerkNoteFiled {
+        ts: Ts, case: CaseId, clerk: PrincipalId,
+        kind: ClerkNoteKind, body: String, cites: Vec<String>,
+    },
+    CaseClosed { ts: Ts, case: CaseId, by: PrincipalId },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reject {
+    UnknownPrincipal(PrincipalId),
+    UnknownCase(CaseId),
+    DuplicateCase(CaseId),
+    WrongPhase { case: CaseId, have: Phase, need: &'static str },
+    NotInMandate(PrincipalId),
+    SubjectCannotAct(PrincipalId),
+    ClerkCannotSovereign(PrincipalId),
+    HumanCannotClerk(PrincipalId),
+    SubjectUnheard { window_ends: Ts },
+    UnknownOutcome(OutcomeId),
+    SelfPair,
+    ZeroVote,
+    EmptyReason,
+    MissingSubject,
+    MissingTarget,
+    AppealTargetNotClosed(CaseId),
+}
+
+// ---------------------------------------------------------------------------
+// The reducer — validate-then-fold; rejected events touch nothing
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default)]
+pub struct GovState {
+    pub principals: HashMap<PrincipalId, Principal>,
+    pub cases: BTreeMap<CaseId, Case>,
+    pub policies: BTreeMap<PolicyId, Policy>,
+    /// Accepted-event journal (append order). Rejections are the caller's
+    /// to log alongside; state reflects accepted acts only.
+    pub journal: VecDeque<Event>,
+}
+
+impl GovState {
+    pub fn apply(&mut self, ev: Event) -> Result<(), Reject> {
+        self.validate_and_fold(&ev)?;
+        self.journal.push_back(ev);
+        Ok(())
+    }
+
+    fn is_clerk(&self, p: &PrincipalId) -> Result<bool, Reject> {
+        match self.principals.get(p) {
+            None => Err(Reject::UnknownPrincipal(p.clone())),
+            Some(pr) => Ok(matches!(pr.role, Role::Clerk { .. })),
+        }
+    }
+
+    /// A human principal acting in a sovereign capacity (anything but notes).
+    fn sovereign(&self, p: &PrincipalId) -> Result<(), Reject> {
+        if self.is_clerk(p)? {
+            return Err(Reject::ClerkCannotSovereign(p.clone()));
+        }
+        Ok(())
+    }
+
+    fn validate_and_fold(&mut self, ev: &Event) -> Result<(), Reject> {
+        match ev {
+            Event::PrincipalRegistered { ts, id, role } => {
+                self.principals.insert(id.clone(), Principal {
+                    id: id.clone(), role: role.clone(), registered_ts: *ts,
+                });
+                Ok(())
+            }
+
+            Event::CaseOpened { ts, id, kind, opened_by, brief, subject, target_case } => {
+                self.sovereign(opened_by)?;
+                if self.cases.contains_key(id) {
+                    return Err(Reject::DuplicateCase(id.clone()));
+                }
+                if *kind == DecisionKind::Personnel && subject.is_none() {
+                    return Err(Reject::MissingSubject);
+                }
+                if *kind == DecisionKind::Appeal {
+                    let t = target_case.as_ref().ok_or(Reject::MissingTarget)?;
+                    let tc = self.cases.get(t).ok_or_else(|| Reject::UnknownCase(t.clone()))?;
+                    if tc.phase != Phase::Closed {
+                        return Err(Reject::AppealTargetNotClosed(t.clone()));
+                    }
+                }
+                self.cases.insert(id.clone(), Case {
+                    id: id.clone(), kind: *kind, phase: Phase::Intake,
+                    opened_by: opened_by.clone(), opened_ts: *ts, brief: brief.clone(),
+                    subject: subject.clone(), target_case: target_case.clone(),
+                    mandate: BTreeSet::new(), evidence: Vec::new(),
+                    notified_ts: None, response: None,
+                    outcomes: BTreeMap::new(), votes: Vec::new(),
+                    clerk_notes: Vec::new(), cited_policies: BTreeSet::new(),
+                    verdict: None,
+                });
+                Ok(())
+            }
+
+            Event::MandateGranted { case, who, by, .. } => {
+                self.sovereign(by)?;
+                self.sovereign(who)?; // clerks can never hold franchise
+                let c = self.case_in(case, &[Phase::Intake, Phase::Noticed])?;
+                if Some(who) == c.subject.as_ref() {
+                    return Err(Reject::SubjectCannotAct(who.clone()));
+                }
+                c.mandate.insert(who.clone());
+                Ok(())
+            }
+
+            Event::MandateRevoked { case, who, by, .. } => {
+                self.sovereign(by)?;
+                let c = self.case_in(case, &[Phase::Intake, Phase::Noticed])?;
+                c.mandate.remove(who);
+                Ok(())
+            }
+
+            Event::EvidenceFiled { ts, case, by, label, body } => {
+                // Anyone known may file evidence — including the subject,
+                // including clerks (provenance is recorded either way).
+                if !self.principals.contains_key(by) {
+                    return Err(Reject::UnknownPrincipal(by.clone()));
+                }
+                let c = self.case_in(case, &[Phase::Intake, Phase::Noticed, Phase::Deliberation])?;
+                c.evidence.push(Evidence {
+                    ts: *ts, filed_by: by.clone(), label: label.clone(), body: body.clone(),
+                });
+                Ok(())
+            }
+
+            Event::SubjectNotified { ts, case, by } => {
+                self.sovereign(by)?;
+                let c = self.case_in(case, &[Phase::Intake])?;
+                if c.subject.is_none() {
+                    return Err(Reject::MissingSubject);
+                }
+                c.notified_ts = Some(*ts);
+                c.phase = Phase::Noticed;
+                Ok(())
+            }
+
+            Event::ResponseFiled { ts, case, by, body } => {
+                let c = self.case_in(case, &[Phase::Noticed, Phase::Deliberation])?;
+                if c.subject.as_ref() != Some(by) {
+                    return Err(Reject::NotInMandate(by.clone())); // only the subject responds
+                }
+                c.response = Some(Statement { ts: *ts, by: by.clone(), body: body.clone() });
+                Ok(())
+            }
+
+            Event::OutcomeProposed { case, by, id, body, enacts_policy, .. } => {
+                self.sovereign(by)?;
+                let c = self.case_in(case, &[Phase::Intake, Phase::Noticed])?;
+                c.outcomes.insert(id.clone(), Outcome {
+                    id: id.clone(), proposed_by: by.clone(),
+                    body: body.clone(), enacts_policy: enacts_policy.clone(),
+                });
+                Ok(())
+            }
+
+            Event::PolicyCited { case, by, policy, .. } => {
+                if !self.principals.contains_key(by) {
+                    return Err(Reject::UnknownPrincipal(by.clone()));
+                }
+                let case_id = case.clone();
+                let c = self.case_in(case, &[Phase::Intake, Phase::Noticed, Phase::Deliberation])?;
+                c.cited_policies.insert(policy.clone());
+                if let Some(p) = self.policies.get_mut(policy) {
+                    p.cited_in.insert(case_id);
+                }
+                Ok(())
+            }
+
+            Event::DeliberationOpened { ts, case, by } => {
+                self.sovereign(by)?;
+                let c = self.case_in(case, &[Phase::Intake, Phase::Noticed])?;
+                // Personnel: the subject must be heard, or the window must lapse.
+                if let Some(window) = rules_for(c.kind).response_window_ms {
+                    let notified = c.notified_ts
+                        .ok_or(Reject::WrongPhase { case: case.clone(), have: c.phase, need: "Noticed" })?;
+                    let ends = notified + window;
+                    if c.response.is_none() && *ts < ends {
+                        return Err(Reject::SubjectUnheard { window_ends: ends });
+                    }
+                }
+                c.phase = Phase::Deliberation;
+                Ok(())
+            }
+
+            Event::VoteCast { ts, case, voter, a, b, a_w, b_w, reason } => {
+                self.sovereign(voter)?;
+                let c = self.case_in(case, &[Phase::Deliberation])?;
+                if !c.mandate.contains(voter) {
+                    return Err(Reject::NotInMandate(voter.clone()));
+                }
+                if a == b { return Err(Reject::SelfPair); }
+                if *a_w == 0 && *b_w == 0 { return Err(Reject::ZeroVote); }
+                if reason.trim().is_empty() { return Err(Reject::EmptyReason); }
+                if !c.outcomes.contains_key(a) { return Err(Reject::UnknownOutcome(a.clone())); }
+                if !c.outcomes.contains_key(b) { return Err(Reject::UnknownOutcome(b.clone())); }
+                c.votes.push(PrefVote {
+                    ts: *ts, voter: voter.clone(),
+                    a: a.clone(), b: b.clone(), a_w: *a_w, b_w: *b_w,
+                    reason: reason.clone(),
+                });
+                Ok(())
+            }
+
+            Event::ClerkNoteFiled { ts, case, clerk, kind, body, cites } => {
+                if !self.is_clerk(clerk)? {
+                    return Err(Reject::HumanCannotClerk(clerk.clone()));
+                }
+                let c = self.case_in(case, &[Phase::Intake, Phase::Noticed, Phase::Deliberation])?;
+                c.clerk_notes.push(ClerkNote {
+                    ts: *ts, clerk: clerk.clone(), kind: *kind,
+                    body: body.clone(), cites: cites.clone(),
+                });
+                Ok(())
+            }
+
+            Event::CaseClosed { ts, case, by } => {
+                self.sovereign(by)?;
+                let (kind, verdict_opt) = {
+                    let c = self.case_in(case, &[Phase::Deliberation])?;
+                    let r = rules_for(c.kind);
+                    let distinct: BTreeSet<&PrincipalId> =
+                        c.votes.iter().map(|v| &v.voter).collect();
+                    let scored = score_outcomes(c);
+                    let quorum_ok = distinct.len() >= r.quorum && scored.len() >= 2;
+                    let margin = if scored.len() >= 2 && scored[1].1 > 0.0 {
+                        scored[0].1 / scored[1].1
+                    } else if scored.len() == 1 { f64::INFINITY } else { 0.0 };
+                    if quorum_ok && margin >= r.min_margin {
+                        let v = Verdict {
+                            ts: *ts, closed_by: by.clone(),
+                            winner: scored[0].0.clone(),
+                            ordering: scored, distinct_voters: distinct.len(),
+                            margin,
+                        };
+                        c.verdict = Some(v.clone());
+                        c.phase = Phase::Closed;
+                        (c.kind, Some(v))
+                    } else {
+                        c.phase = Phase::Lapsed;
+                        (c.kind, None)
+                    }
+                };
+
+                // Consequences of a verdict are reducer-driven, not manual:
+                if let Some(v) = verdict_opt {
+                    // Policy cases enact precedent.
+                    if kind == DecisionKind::Policy {
+                        let (pid, body, cid) = {
+                            let c = &self.cases[case];
+                            let o = &c.outcomes[&v.winner];
+                            (o.enacts_policy.clone(), o.body.clone(), c.id.clone())
+                        };
+                        if let Some(pid) = pid {
+                            let p = self.policies.entry(pid.clone()).or_insert(Policy {
+                                id: pid, versions: Vec::new(),
+                                cited_in: BTreeSet::new(), repealed: false,
+                            });
+                            p.versions.push(PolicyVersion {
+                                ts: *ts, body, enacted_by_case: cid,
+                            });
+                            p.repealed = false;
+                        }
+                    }
+                    // Appeals with winner "vacate" nullify the target verdict.
+                    if kind == DecisionKind::Appeal && v.winner == "vacate" {
+                        let target = self.cases[case].target_case.clone();
+                        if let Some(t) = target {
+                            if let Some(tc) = self.cases.get_mut(&t) {
+                                tc.phase = Phase::Vacated; // verdict stays visible, force is gone
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn case_in(&mut self, id: &CaseId, phases: &[Phase]) -> Result<&mut Case, Reject> {
+        let c = self.cases.get_mut(id).ok_or_else(|| Reject::UnknownCase(id.clone()))?;
+        if !phases.contains(&c.phase) {
+            return Err(Reject::WrongPhase {
+                case: id.clone(), have: c.phase,
+                need: "see event preconditions",
+            });
+        }
+        Ok(c)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Verdict computation: stationary distribution of the preference walk
+// ---------------------------------------------------------------------------
+
+/// Rank Centrality-lite over the case's outcomes. Edge b→a gains weight a_w
+/// for each vote preferring a over b at a_w:b_w (and symmetrically). Scores
+/// are the stationary distribution of the induced random walk: outcomes that
+/// absorb preference mass from strong outcomes rank high.
+fn score_outcomes(c: &Case) -> Vec<(OutcomeId, f64)> {
+    let ids: Vec<&OutcomeId> = c.outcomes.keys().collect();
+    let idx: HashMap<&OutcomeId, usize> = ids.iter().enumerate().map(|(i, o)| (*o, i)).collect();
+    let n = ids.len();
+    if n == 0 { return Vec::new(); }
+
+    let mut w = vec![vec![0.0f64; n]; n]; // w[src][dst]
+    let mut touched = vec![false; n];
+    for v in &c.votes {
+        let (ai, bi) = (idx[&v.a], idx[&v.b]);
+        w[bi][ai] += v.a_w as f64;
+        w[ai][bi] += v.b_w as f64;
+        touched[ai] = true;
+        touched[bi] = true;
+    }
+
+    let d_max = w.iter()
+        .map(|row| row.iter().sum::<f64>())
+        .fold(1.0f64, f64::max);
+
+    let mut p = vec![1.0 / n as f64; n];
+    for _ in 0..10_000 {
+        let mut q = vec![0.0f64; n];
+        for i in 0..n {
+            let out: f64 = w[i].iter().sum();
+            let stay = 1.0 - out / d_max;
+            q[i] += p[i] * stay;
+            for j in 0..n {
+                if w[i][j] > 0.0 {
+                    q[j] += p[i] * (w[i][j] / d_max);
+                }
+            }
+        }
+        let diff: f64 = p.iter().zip(&q).map(|(a, b)| (a - b).abs()).sum();
+        p = q;
+        if diff < 1e-9 { break; }
+    }
+
+    let mut scored: Vec<(OutcomeId, f64)> = ids.iter().enumerate()
+        .filter(|(i, _)| touched[*i]) // unvoted outcomes are absent, not last
+        .map(|(i, o)| ((*o).clone(), p[i]))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored
+}
+
+// ---------------------------------------------------------------------------
+// The Ricochet case, end to end
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reg(s: &mut GovState, id: &str, role: Role) {
+        s.apply(Event::PrincipalRegistered { ts: 0, id: id.into(), role }).unwrap();
+    }
+
+    #[test]
+    fn personnel_case_full_lifecycle() {
+        let mut s = GovState::default();
+        for a in ["tommyy", "neptune", "abood", "gedayo"] {
+            reg(&mut s, a, Role::Admin);
+        }
+        reg(&mut s, "ricochet", Role::Member);
+        reg(&mut s, "clerk", Role::Clerk { model: "claude".into() });
+
+        s.apply(Event::CaseOpened {
+            ts: 1, id: "case-0007".into(), kind: DecisionKind::Personnel,
+            opened_by: "tommyy".into(),
+            brief: "Alleged mod abuse: unauthorized seeding move, unilateral mod grant, message deletion".into(),
+            subject: Some("ricochet".into()), target_case: None,
+        }).unwrap();
+
+        for who in ["tommyy", "neptune", "abood"] {
+            s.apply(Event::MandateGranted {
+                ts: 2, case: "case-0007".into(), who: who.into(), by: "tommyy".into(),
+            }).unwrap();
+        }
+        // The subject can never hold franchise in their own case.
+        assert_eq!(
+            s.apply(Event::MandateGranted {
+                ts: 2, case: "case-0007".into(), who: "ricochet".into(), by: "tommyy".into(),
+            }),
+            Err(Reject::SubjectCannotAct("ricochet".into()))
+        );
+
+        s.apply(Event::EvidenceFiled {
+            ts: 3, case: "case-0007".into(), by: "abood".into(),
+            label: "audit-tm-move".into(),
+            body: "Site audit log: ricochet moved TM open→newcomer. <link>".into(),
+        }).unwrap();
+        s.apply(Event::EvidenceFiled {
+            ts: 3, case: "case-0007".into(), by: "abood".into(),
+            label: "msg-deletion".into(),
+            body: "Discord audit log screenshot: neptune's message deleted by ricochet. <link>".into(),
+        }).unwrap();
+
+        for (id, body) in [
+            ("demote", "Remove all mod/admin roles"),
+            ("warn", "Formal warning, retain roles under observation"),
+            ("no-action", "Allegations unsubstantiated"),
+        ] {
+            s.apply(Event::OutcomeProposed {
+                ts: 4, case: "case-0007".into(), by: "tommyy".into(),
+                id: id.into(), body: body.into(), enacts_policy: None,
+            }).unwrap();
+        }
+
+        s.apply(Event::SubjectNotified { ts: 5, case: "case-0007".into(), by: "tommyy".into() }).unwrap();
+
+        // Deliberation cannot open before response or window lapse.
+        assert!(matches!(
+            s.apply(Event::DeliberationOpened { ts: 6, case: "case-0007".into(), by: "tommyy".into() }),
+            Err(Reject::SubjectUnheard { .. })
+        ));
+
+        s.apply(Event::ResponseFiled {
+            ts: 7, case: "case-0007".into(), by: "ricochet".into(),
+            body: "TM's logs were under the limit at the time; the mod grant was 20 minutes, discord-only.".into(),
+        }).unwrap();
+
+        s.apply(Event::ClerkNoteFiled {
+            ts: 8, case: "case-0007".into(), clerk: "clerk".into(),
+            kind: ClerkNoteKind::Contradiction,
+            body: "Response conflicts with audit-tm-move: log-page count exceeded limit at move time.".into(),
+            cites: vec!["audit-tm-move".into()],
+        }).unwrap();
+        // A clerk may never vote — even if someone tried to grant it franchise.
+        assert_eq!(
+            s.apply(Event::MandateGranted {
+                ts: 8, case: "case-0007".into(), who: "clerk".into(), by: "tommyy".into(),
+            }),
+            Err(Reject::ClerkCannotSovereign("clerk".into()))
+        );
+
+        s.apply(Event::DeliberationOpened { ts: 9, case: "case-0007".into(), by: "tommyy".into() }).unwrap();
+
+        s.apply(Event::VoteCast {
+            ts: 10, case: "case-0007".into(), voter: "abood".into(),
+            a: "demote".into(), b: "warn".into(), a_w: 4, b_w: 1,
+            reason: "Shifting stories against a clean audit trail; trust is the entire job.".into(),
+        }).unwrap();
+        s.apply(Event::VoteCast {
+            ts: 11, case: "case-0007".into(), voter: "neptune".into(),
+            a: "demote".into(), b: "no-action".into(), a_w: 3, b_w: 1,
+            reason: "Deleting a founder's message alone crosses the line.".into(),
+        }).unwrap();
+        s.apply(Event::VoteCast {
+            ts: 12, case: "case-0007".into(), voter: "tommyy".into(),
+            a: "demote".into(), b: "warn".into(), a_w: 2, b_w: 1,
+            reason: "Best admin we had, but the precedent matters more than the person.".into(),
+        }).unwrap();
+
+        s.apply(Event::CaseClosed { ts: 13, case: "case-0007".into(), by: "tommyy".into() }).unwrap();
+
+        let c = &s.cases["case-0007"];
+        assert_eq!(c.phase, Phase::Closed);
+        let v = c.verdict.as_ref().unwrap();
+        assert_eq!(v.winner, "demote");
+        assert_eq!(v.distinct_voters, 3);
+
+        // Closed means closed: late votes bounce off the constitution.
+        assert!(matches!(
+            s.apply(Event::VoteCast {
+                ts: 14, case: "case-0007".into(), voter: "abood".into(),
+                a: "demote".into(), b: "warn".into(), a_w: 9, b_w: 1,
+                reason: "pile-on".into(),
+            }),
+            Err(Reject::WrongPhase { .. })
+        ));
+    }
+
+    #[test]
+    fn policy_case_enacts_precedent_and_appeal_can_vacate() {
+        let mut s = GovState::default();
+        for a in ["tommyy", "neptune", "abood"] { reg(&mut s, a, Role::Admin); }
+
+        s.apply(Event::CaseOpened {
+            ts: 1, id: "case-0008".into(), kind: DecisionKind::Policy,
+            opened_by: "tommyy".into(),
+            brief: "Standard penalty for slurs on servers".into(),
+            subject: None, target_case: None,
+        }).unwrap();
+        for who in ["tommyy", "neptune", "abood"] {
+            s.apply(Event::MandateGranted { ts: 1, case: "case-0008".into(), who: who.into(), by: "tommyy".into() }).unwrap();
+        }
+        s.apply(Event::OutcomeProposed {
+            ts: 2, case: "case-0008".into(), by: "tommyy".into(),
+            id: "hard-mute-1wk".into(),
+            body: "Hard server mute, one week, escalating on repeat.".into(),
+            enacts_policy: Some("moderation/slur-penalty".into()),
+        }).unwrap();
+        s.apply(Event::OutcomeProposed {
+            ts: 2, case: "case-0008".into(), by: "neptune".into(),
+            id: "perma".into(), body: "Immediate permanent ban.".into(),
+            enacts_policy: Some("moderation/slur-penalty".into()),
+        }).unwrap();
+        s.apply(Event::DeliberationOpened { ts: 3, case: "case-0008".into(), by: "tommyy".into() }).unwrap();
+        for (voter, aw, bw, why) in [
+            ("tommyy", 3, 1, "People get heated; proportionality keeps players."),
+            ("abood", 2, 1, "Mute is enforceable and visible."),
+            ("neptune", 1, 2, "I still prefer perma, but noted."),
+        ] {
+            s.apply(Event::VoteCast {
+                ts: 4, case: "case-0008".into(), voter: voter.into(),
+                a: "hard-mute-1wk".into(), b: "perma".into(),
+                a_w: aw, b_w: bw, reason: why.into(),
+            }).unwrap();
+        }
+        s.apply(Event::CaseClosed { ts: 5, case: "case-0008".into(), by: "tommyy".into() }).unwrap();
+
+        let p = &s.policies["moderation/slur-penalty"];
+        assert_eq!(p.versions.len(), 1);
+        assert_eq!(p.versions[0].enacted_by_case, "case-0008");
+
+        // Later, a case cites the policy; the index updates itself.
+        s.apply(Event::CaseOpened {
+            ts: 6, id: "case-0009".into(), kind: DecisionKind::Routine,
+            opened_by: "abood".into(), brief: "player X slur incident".into(),
+            subject: None, target_case: None,
+        }).unwrap();
+        s.apply(Event::PolicyCited {
+            ts: 6, case: "case-0009".into(), by: "abood".into(),
+            policy: "moderation/slur-penalty".into(),
+        }).unwrap();
+        assert!(s.policies["moderation/slur-penalty"].cited_in.contains("case-0009"));
+
+        // An appeal against case-0008 whose verdict is "vacate" nullifies it.
+        s.apply(Event::CaseOpened {
+            ts: 7, id: "case-0010".into(), kind: DecisionKind::Appeal,
+            opened_by: "neptune".into(), brief: "Re-open slur policy: vote was rushed".into(),
+            subject: None, target_case: Some("case-0008".into()),
+        }).unwrap();
+        for who in ["tommyy", "neptune", "abood"] {
+            s.apply(Event::MandateGranted { ts: 7, case: "case-0010".into(), who: who.into(), by: "neptune".into() }).unwrap();
+        }
+        s.apply(Event::OutcomeProposed {
+            ts: 7, case: "case-0010".into(), by: "neptune".into(),
+            id: "vacate".into(), body: "Vacate the verdict of case-0008".into(), enacts_policy: None,
+        }).unwrap();
+        s.apply(Event::OutcomeProposed {
+            ts: 7, case: "case-0010".into(), by: "tommyy".into(),
+            id: "uphold".into(), body: "Uphold".into(), enacts_policy: None,
+        }).unwrap();
+        s.apply(Event::DeliberationOpened { ts: 8, case: "case-0010".into(), by: "neptune".into() }).unwrap();
+        for (voter, aw, bw) in [("neptune", 4, 1), ("abood", 3, 1), ("tommyy", 2, 1)] {
+            s.apply(Event::VoteCast {
+                ts: 9, case: "case-0010".into(), voter: voter.into(),
+                a: "vacate".into(), b: "uphold".into(), a_w: aw, b_w: bw,
+                reason: "process was rushed".into(),
+            }).unwrap();
+        }
+        s.apply(Event::CaseClosed { ts: 10, case: "case-0010".into(), by: "neptune".into() }).unwrap();
+
+        assert_eq!(s.cases["case-0008"].phase, Phase::Vacated);
+        // The vacated verdict remains readable — history is never erased.
+        assert!(s.cases["case-0008"].verdict.is_some());
+    }
+}
