@@ -59,6 +59,11 @@ pub enum Event {
         id: EvidenceId,
         label: String,
         body: String,
+        /// Public URL of an uploaded exhibit (R2 or `/blobs/…`).
+        #[serde(default)]
+        href: Option<String>,
+        #[serde(default)]
+        filename: Option<String>,
     },
     SubjectNotified {
         ts: Ts,

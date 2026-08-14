@@ -283,11 +283,16 @@ impl GovState {
                 id,
                 label,
                 body,
+                href,
+                filename,
             } => {
                 if !self.principals.contains_key(&by) {
                     return Err(Reject::UnknownPrincipal(by));
                 }
-                if body.trim().is_empty() || label.trim().is_empty() {
+                if label.trim().is_empty() {
+                    return Err(Reject::EmptyBody);
+                }
+                if body.trim().is_empty() && href.as_deref().unwrap_or("").is_empty() {
                     return Err(Reject::EmptyBody);
                 }
                 let c =
@@ -303,6 +308,8 @@ impl GovState {
                         filed_by: by,
                         label,
                         body,
+                        href,
+                        filename,
                     },
                 );
                 Ok(())

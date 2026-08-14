@@ -8,12 +8,13 @@ publish = false
 default-run = "judge"
 
 [dependencies]
-axum = { version = "0.8", features = ["form", "query", "macros"] }
+axum = { version = "0.8", features = ["form", "query", "macros", "multipart"] }
 hex = "0.4"
 maud = { version = "0.27", features = ["axum"] }
 hmac = "0.12"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusty-s3 = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

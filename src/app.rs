@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
+use crate::blob::BlobStore;
 use crate::clock::now_ms;
 use crate::config::CourtConfig;
 use crate::discord::{roster_from_members, DiscordClient, DiscordEnv};
@@ -22,6 +23,7 @@ pub struct AppState {
     pub discord: Arc<DiscordClient>,
     pub session_secret: String,
     pub public_url: String,
+    pub blobs: BlobStore,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +95,7 @@ pub async fn boot_state(opts: &JudgeOptions) -> Result<AppState, Box<dyn std::er
         discord: Arc::new(discord),
         session_secret: opts.session_secret.clone(),
         public_url: opts.public_url.clone(),
+        blobs: BlobStore::from_env(&opts.data_dir, &opts.public_url),
     };
     if let Err(e) = sync_roster(&state).await {
         tracing::warn!("roster sync skipped: {e}");

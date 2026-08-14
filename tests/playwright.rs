@@ -1,5 +1,6 @@
 mod common;
 
+use playwright_rs::protocol::{DropOptions, FilePayload};
 use playwright_rs::{expect, Playwright};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -77,6 +78,23 @@ async fn chief_records_a_cheat_verdict() {
         .fill("https://mge.tf/demos/abc snap at 3:12", None)
         .await
         .unwrap();
+    let snap = std::fs::read("tests/fixtures/stv-snap.png").expect("exhibit fixture");
+    page.locator("[data-testid=evidence-drop]")
+        .drop(
+            DropOptions::builder()
+                .file(FilePayload::new(
+                    "stv-snap.png",
+                    "image/png",
+                    snap,
+                ))
+                .build(),
+        )
+        .await
+        .expect("drop exhibit");
+    expect(page.locator("[data-testid=evidence-picked]"))
+        .to_contain_text("stv-snap.png")
+        .await
+        .expect("jquery took the drop");
     page.locator("[data-testid=evidence-submit]")
         .click(None)
         .await
@@ -147,6 +165,14 @@ async fn chief_records_a_cheat_verdict() {
         .to_be_visible()
         .await
         .expect("evidence remains linkable");
+    expect(page.locator("[data-testid=exhibit-demo-stv]"))
+        .to_be_visible()
+        .await
+        .expect("exhibit filed");
+    expect(page.locator("[data-testid=exhibit-img-demo-stv]"))
+        .to_be_visible()
+        .await
+        .expect("image exhibit");
 
     let _ = browser.close().await;
     stack.abort();

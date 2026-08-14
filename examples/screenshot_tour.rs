@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use judge::testing::start_stack;
 use playwright_rs::protocol::browser_context::Viewport;
 use playwright_rs::protocol::{ScreenshotOptions, ScreenshotType};
+use playwright_rs::protocol::{DropOptions, FilePayload};
 use playwright_rs::{expect, Playwright};
 
 fn out_dirs() -> Vec<PathBuf> {
@@ -104,10 +105,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     page.locator("[data-testid=evidence-body]")
         .fill("https://mge.tf/demos/abc snap at 3:12", None)
         .await?;
+    let exhibit = std::fs::read("tests/fixtures/stv-snap.png")?;
+    page.locator("[data-testid=evidence-drop]")
+        .drop(
+            DropOptions::builder()
+                .file(FilePayload::new(
+                    "stv-snap.png",
+                    "image/png",
+                    exhibit,
+                ))
+                .build(),
+        )
+        .await?;
+    expect(page.locator("[data-testid=evidence-picked]"))
+        .to_contain_text("stv-snap.png")
+        .await?;
+    snap(&page, &dirs, "06-evidence-drop").await?;
     page.locator("[data-testid=evidence-submit]")
         .click(None)
         .await?;
-    snap(&page, &dirs, "06-evidence-filed").await?;
+    snap(&page, &dirs, "07-evidence-filed").await?;
 
     page.locator("[data-testid=outcome-id]")
         .fill("cheat-ban", None)
@@ -127,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     page.locator("[data-testid=outcome-submit]")
         .click(None)
         .await?;
-    snap(&page, &dirs, "07-outcomes-proposed").await?;
+    snap(&page, &dirs, "08-outcomes-proposed").await?;
 
     page.locator("[data-testid=deliberate-submit]")
         .click(None)
@@ -135,7 +152,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     expect(page.locator("[data-testid=case-phase]"))
         .to_have_text("deliberation")
         .await?;
-    snap(&page, &dirs, "08-deliberation").await?;
+    snap(&page, &dirs, "09-deliberation").await?;
 
     page.locator("[data-testid=vote-outcome]")
         .select_option("cheat-ban", None)
@@ -143,12 +160,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     page.locator("[data-testid=vote-reason]")
         .fill("Demo is unambiguous.", None)
         .await?;
-    snap(&page, &dirs, "09-ballot-filled").await?;
+    snap(&page, &dirs, "10-ballot-filled").await?;
 
     page.locator("[data-testid=vote-submit]")
         .click(None)
         .await?;
-    snap(&page, &dirs, "10-ballot-cast").await?;
+    snap(&page, &dirs, "11-ballot-cast").await?;
 
     page.locator("[data-testid=close-submit]")
         .click(None)
@@ -156,20 +173,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     expect(page.locator("[data-testid=verdict]"))
         .to_be_visible()
         .await?;
-    snap(&page, &dirs, "11-verdict").await?;
+    snap(&page, &dirs, "12-verdict").await?;
 
     page.goto(&format!("{}/log", stack.judge_url), None).await?;
-    snap(&page, &dirs, "12-event-log").await?;
+    snap(&page, &dirs, "13-event-log").await?;
 
     page.goto(&format!("{}/people/100", stack.judge_url), None)
         .await?;
-    snap(&page, &dirs, "13-person-tommyy").await?;
+    snap(&page, &dirs, "14-person-tommyy").await?;
 
     page.goto(&stack.judge_url, None).await?;
-    snap(&page, &dirs, "14-docket-with-closed-case").await?;
+    snap(&page, &dirs, "15-docket-with-closed-case").await?;
 
     let _ = browser.close().await;
     stack.abort();
-    eprintln!("done. {} shots in {:?}", 14, dirs);
+    eprintln!("done. {} shots in {:?}", 15, dirs);
     Ok(())
 }

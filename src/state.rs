@@ -33,6 +33,10 @@ pub struct Evidence {
     pub filed_by: PrincipalId,
     pub label: String,
     pub body: String,
+    #[serde(default)]
+    pub href: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

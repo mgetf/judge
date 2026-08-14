@@ -16,6 +16,7 @@
 //!   * Everything that exists has a stable link path.
 
 pub mod app;
+pub mod blob;
 pub mod clock;
 pub mod config;
 pub mod discord;

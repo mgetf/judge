@@ -1,11 +1,13 @@
-use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::extract::{DefaultBodyLimit, Multipart, Path, Query, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use maud::Markup;
 use axum::routing::{get, post};
 use axum::{Form, Router};
+use maud::Markup;
 use serde::Deserialize;
 use tower_http::trace::TraceLayer;
+
+use crate::blob::{self, MAX_BYTES};
 
 use crate::app::{commit, sync_roster, AppError, AppState};
 use crate::clock::now_ms;
@@ -38,8 +40,21 @@ pub fn router(state: AppState) -> Router {
         .route("/policies/{*id}", get(show_policy))
         .route("/log", get(show_log))
         .route("/sync", post(manual_sync))
+        .route("/blobs/{*key}", get(serve_blob))
+        .route("/jquery.js", get(jquery))
+        .layer(DefaultBodyLimit::max(MAX_BYTES + 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+async fn jquery() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/javascript; charset=utf-8"),
+        )],
+        include_str!("../static/jquery-3.7.1.min.js"),
+    )
 }
 
 fn html_ok(body: Markup) -> Response {
@@ -236,24 +251,60 @@ async fn show_case(
     html_ok(html::case_page(who.as_ref(), case, None, &g.principals))
 }
 
-#[derive(Deserialize)]
-struct EvidenceForm {
+struct UploadedFile {
+    filename: String,
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+struct EvidenceSubmission {
     id: String,
     label: String,
     body: String,
+    file: Option<UploadedFile>,
 }
 
 async fn file_evidence(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(case): Path<String>,
-    Form(form): Form<EvidenceForm>,
+    multipart: Multipart,
 ) -> Response {
     let who = match require_viewer(&state, &headers).await {
         Ok(p) => p,
         Err(r) => return r,
     };
-    let ev = match parse_case_evidence(&case, &form) {
+    let form = match read_evidence_multipart(multipart).await {
+        Ok(f) => f,
+        Err(e) => return html_ok(html::flash_page(Some(&who), &e)),
+    };
+    let mut id = form.id.trim().to_string();
+    let mut label = form.label.trim().to_string();
+    let mut body = form.body;
+    let mut href = None;
+    let mut filename = None;
+    if let Some(file) = form.file {
+        if id.is_empty() {
+            id = blob::slug_id(&file.filename);
+        }
+        if label.is_empty() {
+            label = file.filename.clone();
+        }
+        if body.trim().is_empty() {
+            body = file.filename.clone();
+        }
+        let safe = blob::safe_filename(&file.filename);
+        let key = format!("cases/{case}/{id}/{safe}");
+        let ct = blob::guess_type(&safe, &file.content_type);
+        match state.blobs.put(&key, &file.bytes, &ct).await {
+            Ok(url) => {
+                href = Some(url);
+                filename = Some(safe);
+            }
+            Err(e) => return html_ok(html::flash_page(Some(&who), &e)),
+        }
+    }
+    let ev = match parse_case_evidence(&case, &id) {
         Ok(ev) => ev,
         Err(e) => return html_ok(html::flash_page(Some(&who), &e)),
     };
@@ -264,8 +315,10 @@ async fn file_evidence(
             case: ev.0,
             by: who.id.clone(),
             id: ev.1,
-            label: form.label,
-            body: form.body,
+            label,
+            body,
+            href,
+            filename,
         },
     )
     .await
@@ -275,11 +328,71 @@ async fn file_evidence(
     }
 }
 
-fn parse_case_evidence(case: &str, form: &EvidenceForm) -> Result<(CaseId, EvidenceId), String> {
+fn parse_case_evidence(case: &str, id: &str) -> Result<(CaseId, EvidenceId), String> {
     Ok((
         CaseId::parse(case).map_err(|e| e.to_string())?,
-        EvidenceId::parse(form.id.trim()).map_err(|e| e.to_string())?,
+        EvidenceId::parse(id.trim()).map_err(|e| e.to_string())?,
     ))
+}
+
+async fn read_evidence_multipart(mut multipart: Multipart) -> Result<EvidenceSubmission, String> {
+    let mut id = String::new();
+    let mut label = String::new();
+    let mut body = String::new();
+    let mut file = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| format!("multipart: {e}"))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if name == "file" {
+            let filename = field.file_name().unwrap_or("").to_string();
+            let content_type = field
+                .content_type()
+                .unwrap_or("application/octet-stream")
+                .to_string();
+            let bytes = field.bytes().await.map_err(|e| format!("read file: {e}"))?;
+            if !filename.is_empty() && !bytes.is_empty() {
+                if bytes.len() > MAX_BYTES {
+                    return Err(format!("file larger than {MAX_BYTES} bytes"));
+                }
+                file = Some(UploadedFile {
+                    filename,
+                    content_type,
+                    bytes: bytes.to_vec(),
+                });
+            }
+        } else {
+            let text = field.text().await.map_err(|e| format!("read field: {e}"))?;
+            match name.as_str() {
+                "id" => id = text,
+                "label" => label = text,
+                "body" => body = text,
+                _ => {}
+            }
+        }
+    }
+    Ok(EvidenceSubmission {
+        id,
+        label,
+        body,
+        file,
+    })
+}
+
+async fn serve_blob(State(state): State<AppState>, Path(key): Path<String>) -> Response {
+    let Some((bytes, ct)) = state.blobs.get_local(&key) else {
+        return AppError::NotFound.into_response();
+    };
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_str(&ct).unwrap_or(HeaderValue::from_static("application/octet-stream")),
+        )],
+        bytes,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]

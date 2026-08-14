@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
+use crate::blob;
 use crate::ids::PrincipalId;
 use crate::links::{path, Cite};
 use crate::state::{Case, Policy, Principal, Verdict};
@@ -186,6 +187,26 @@ button.quiet { background: transparent; color: var(--ink); }
 .fold-accepted { color: var(--ok); }
 .fold-rejected { color: var(--stamp); }
 .person-id { font-family: ui-monospace, monospace; color: var(--muted); }
+.drop {
+  border: 2px dashed #b7ae9c;
+  background: var(--field);
+  padding: 1.05rem 0.9rem 0.95rem;
+  text-align: center;
+  color: var(--muted);
+  margin: 0.7rem 0 0.85rem;
+}
+.drop.hot { border-color: var(--ink); color: var(--ink); background: #fff; }
+.drop .hint { display: block; margin-bottom: 0.45rem; }
+.drop .picked { display: block; margin-top: 0.4rem; color: var(--ink); font-style: italic; }
+.drop input[type=file] { max-width: 100%; }
+.exhibit { margin: 0.45rem 0 0.15rem; }
+.exhibit img {
+  display: block;
+  max-width: min(100%, 28rem);
+  margin-top: 0.4rem;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+}
 "#;
 
 fn layout(title: &str, who: Option<&Principal>, body: Markup) -> Markup {
@@ -204,10 +225,50 @@ fn layout(title: &str, who: Option<&Principal>, body: Markup) -> Markup {
                     (mast_who(who))
                 }
                 (body)
+                script src="/jquery.js" {}
+                script { (PreEscaped(DROP_JS)) }
             }
         }
     }
 }
+
+const DROP_JS: &str = r#"
+$(function () {
+  var $form = $("[data-testid=file-evidence]");
+  if (!$form.length) return;
+  var $drop = $form.find("[data-testid=evidence-drop]");
+  var $input = $form.find("[data-testid=evidence-file]");
+  var $picked = $drop.find(".picked");
+  function take(files) {
+    if (!files || !files.length) return;
+    try { $input.prop("files", files); } catch (e) {}
+    var name = files[0].name;
+    $picked.text(name);
+    var $id = $form.find("[data-testid=evidence-id]");
+    var $label = $form.find("[data-testid=evidence-label]");
+    if (!$id.val()) {
+      $id.val(name.replace(/\.[^.]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "exhibit");
+    }
+    if (!$label.val()) $label.val(name);
+  }
+  $drop.on("dragover dragenter", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    $drop.addClass("hot");
+  });
+  $drop.on("dragleave", function (e) {
+    e.preventDefault();
+    $drop.removeClass("hot");
+  });
+  $drop.on("drop", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    $drop.removeClass("hot");
+    take(e.originalEvent.dataTransfer.files);
+  });
+  $input.on("change", function () { take(this.files); });
+});
+"#;
 
 fn mast_who(who: Option<&Principal>) -> Markup {
     html! {
@@ -418,8 +479,19 @@ pub fn case_page(
                                 case: case.id.clone(),
                                 id: e.id.clone(),
                             })) { (e.id) }
-                            " — " (e.label) " — " (e.body) " "
+                            " — " (e.label)
+                            @if !e.body.is_empty() { " — " (e.body) }
+                            " "
                             span.by { "by " (name_of(people, &e.filed_by)) }
+                            @if let Some(href) = &e.href {
+                                @let name = e.filename.as_deref().unwrap_or("exhibit");
+                                div.exhibit data-testid=(format!("exhibit-{}", e.id)) {
+                                    a href=(href) data-testid=(format!("exhibit-link-{}", e.id)) { (name) }
+                                    @if blob::looks_like_image(name) || blob::looks_like_image(href) {
+                                        img src=(href) alt=(name) data-testid=(format!("exhibit-img-{}", e.id));
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -468,19 +540,24 @@ fn case_actions(case: &Case, seated: bool, on_bench: bool, is_subject: bool) -> 
     let proposing = matches!(case.phase, Phase::Intake | Phase::Noticed);
     html! {
         @if seated && live {
-            form.panel method="post" action=(format!("/cases/{}/evidence", case.id)) data-testid="file-evidence" {
+            form.panel method="post" action=(format!("/cases/{}/evidence", case.id)) enctype="multipart/form-data" data-testid="file-evidence" {
                 h3 { "File evidence" }
                 label.field {
                     span { "Id" }
-                    input name="id" data-testid="evidence-id" required;
+                    input name="id" data-testid="evidence-id";
                 }
                 label.field {
                     span { "Label" }
-                    input name="label" data-testid="evidence-label" required;
+                    input name="label" data-testid="evidence-label";
                 }
                 label.field {
                     span { "Body" }
-                    textarea name="body" data-testid="evidence-body" required {}
+                    textarea name="body" data-testid="evidence-body" {}
+                }
+                div.drop data-testid="evidence-drop" {
+                    span.hint { "Drop an exhibit here, or choose a file." }
+                    input type="file" name="file" data-testid="evidence-file";
+                    span.picked data-testid="evidence-picked" {}
                 }
                 button type="submit" data-testid="evidence-submit" { "File" }
             }

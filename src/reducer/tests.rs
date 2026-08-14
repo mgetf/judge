@@ -94,6 +94,8 @@ fn evidence(s: &mut GovState, case: &str, id: &str, body: &str) {
         id: eid(id),
         label: id.into(),
         body: body.into(),
+        href: None,
+        filename: None,
     })
     .unwrap();
 }
@@ -996,10 +998,48 @@ fn duplicate_ids_are_rejected() {
             id: eid("e1"),
             label: "e1".into(),
             body: "again".into(),
+            href: None,
+            filename: None,
         })
         .unwrap_err(),
         Reject::DuplicateEvidence(_)
     ));
+}
+
+#[test]
+fn evidence_may_be_an_exhibit_without_a_note() {
+    let mut s = GovState::new();
+    sync(&mut s, bench3());
+    open(
+        &mut s,
+        "case-ex",
+        DecisionKind::Record,
+        Hearing::None,
+        None,
+        None,
+    );
+    s.apply(Event::EvidenceFiled {
+        ts: 2,
+        case: cid("case-ex"),
+        by: pid("abood"),
+        id: eid("snap"),
+        label: "STV snap".into(),
+        body: String::new(),
+        href: Some("http://court.test/blobs/cases/case-ex/snap/stv-snap.png".into()),
+        filename: Some("stv-snap.png".into()),
+    })
+    .unwrap();
+    assert!(s.apply(Event::EvidenceFiled {
+        ts: 3,
+        case: cid("case-ex"),
+        by: pid("abood"),
+        id: eid("empty"),
+        label: "nothing".into(),
+        body: String::new(),
+        href: None,
+        filename: None,
+    })
+    .is_err());
 }
 
 #[test]
