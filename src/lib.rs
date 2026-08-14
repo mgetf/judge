@@ -30,6 +30,7 @@ pub mod reducer;
 pub mod scoring;
 pub mod session;
 pub mod state;
+pub mod testing;
 pub mod types;
 
 pub use app::{serve_judge, serve_on, AppState, JudgeOptions, JudgeServer};
