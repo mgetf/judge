@@ -1,0 +1,4 @@
+{
+  "name": "judge (tommystack template)",
+  "install": "rustup component add rustfmt clippy && rustc --version && cargo --version && cargo fmt --version && cargo clippy --version"
+}
