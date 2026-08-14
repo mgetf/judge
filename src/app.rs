@@ -24,6 +24,12 @@ pub struct AppState {
     pub public_url: String,
 }
 
+impl AppState {
+    pub fn secure_cookies(&self) -> bool {
+        self.public_url.starts_with("https://")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct JudgeOptions {
     pub bind: String,

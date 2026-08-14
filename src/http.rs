@@ -38,6 +38,7 @@ pub fn router(state: AppState) -> Router {
         .route("/policies/{*id}", get(show_policy))
         .route("/log", get(show_log))
         .route("/sync", post(manual_sync))
+        .route("/healthz", get(|| async { "ok" }))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -56,11 +57,17 @@ fn redirect_see(path: &str) -> Response {
     Redirect::to(path).into_response()
 }
 
-fn redirect_with_session(path: &str, secret: &str, principal: &PrincipalId) -> Response {
+fn redirect_with_session(
+    path: &str,
+    secret: &str,
+    principal: &PrincipalId,
+    secure: bool,
+) -> Response {
     let cookie = session::set_cookie(
         SESSION_COOKIE,
         &encode(secret, principal.as_str()),
         60 * 60 * 24 * 30,
+        secure,
     );
     (
         StatusCode::SEE_OTHER,
@@ -90,7 +97,12 @@ async fn docket(State(state): State<AppState>, headers: HeaderMap) -> Response {
 async fn login(State(state): State<AppState>) -> Response {
     let st = random_state();
     let loc = state.discord.env().authorize_redirect(&st);
-    let cookie = session::set_cookie(OAUTH_STATE_COOKIE, &encode(&state.session_secret, &st), 600);
+    let cookie = session::set_cookie(
+        OAUTH_STATE_COOKIE,
+        &encode(&state.session_secret, &st),
+        600,
+        state.secure_cookies(),
+    );
     (
         StatusCode::SEE_OTHER,
         [(header::LOCATION, loc), (header::SET_COOKIE, cookie)],
@@ -98,12 +110,15 @@ async fn login(State(state): State<AppState>) -> Response {
         .into_response()
 }
 
-async fn logout() -> Response {
+async fn logout(State(state): State<AppState>) -> Response {
     (
         StatusCode::SEE_OTHER,
         [
             (header::LOCATION, "/".to_string()),
-            (header::SET_COOKIE, session::clear_cookie(SESSION_COOKIE)),
+            (
+                header::SET_COOKIE,
+                session::clear_cookie(SESSION_COOKIE, state.secure_cookies()),
+            ),
         ],
     )
         .into_response()
@@ -158,7 +173,7 @@ async fn oauth_callback(
     if let Err(e) = sync_roster(&state).await {
         tracing::warn!("roster sync after login: {e}");
     }
-    redirect_with_session("/", &state.session_secret, &pid)
+    redirect_with_session("/", &state.session_secret, &pid, state.secure_cookies())
 }
 
 #[derive(Deserialize)]
