@@ -37,12 +37,20 @@ pub fn decode(secret: &str, cookie: &str) -> Option<String> {
     Some(value.to_string())
 }
 
-pub fn set_cookie(name: &str, value: &str, max_age: i64) -> String {
-    format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}")
+pub fn set_cookie(name: &str, value: &str, max_age: i64, secure: bool) -> String {
+    let mut cookie = format!("{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
-pub fn clear_cookie(name: &str) -> String {
-    format!("{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0")
+pub fn clear_cookie(name: &str, secure: bool) -> String {
+    let mut cookie = format!("{name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
 pub fn cookie_from_headers(headers: &HeaderMap, name: &str) -> Option<String> {

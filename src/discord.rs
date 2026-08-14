@@ -163,24 +163,43 @@ impl DiscordClient {
 
     pub async fn list_members(&self, guild_id: &str) -> Result<Vec<DiscordMember>, DiscordError> {
         let token = self.env.bot_token.as_ref().ok_or(DiscordError::NoBot)?;
-        let url = format!(
-            "{}/guilds/{guild_id}/members?limit=1000",
-            self.env.api_base.trim_end_matches('/')
-        );
-        let resp = self
-            .http
-            .get(url)
-            .header("Authorization", format!("Bot {token}"))
-            .send()
-            .await?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        if !status.is_success() {
-            return Err(DiscordError::Api(format!("members {status}: {body}")));
+        let base = self.env.api_base.trim_end_matches('/');
+        let mut out = Vec::new();
+        let mut after = String::new();
+        loop {
+            let url = if after.is_empty() {
+                format!("{base}/guilds/{guild_id}/members?limit=1000")
+            } else {
+                format!("{base}/guilds/{guild_id}/members?limit=1000&after={after}")
+            };
+            let resp = self
+                .http
+                .get(url)
+                .header("Authorization", format!("Bot {token}"))
+                .send()
+                .await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            if !status.is_success() {
+                return Err(DiscordError::Api(format!("members {status}: {body}")));
+            }
+            let rows: Vec<MemberJson> = serde_json::from_str(&body)
+                .map_err(|e| DiscordError::Api(format!("members json: {e}")))?;
+            if rows.is_empty() {
+                break;
+            }
+            let last_id = rows.last().map(|m| m.user.id.clone());
+            let n = rows.len();
+            out.extend(rows.into_iter().map(Into::into));
+            if n < 1000 {
+                break;
+            }
+            after = last_id.unwrap_or_default();
+            if after.is_empty() {
+                break;
+            }
         }
-        let rows: Vec<MemberJson> = serde_json::from_str(&body)
-            .map_err(|e| DiscordError::Api(format!("members json: {e}")))?;
-        Ok(rows.into_iter().map(Into::into).collect())
+        Ok(out)
     }
 }
 

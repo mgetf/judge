@@ -1,0 +1,15 @@
+.git
+.github
+.cursor
+target
+data
+screenshots
+from-thousand
+event_log.rs
+form_template.rs
+ranking.rs
+reducer.rs
+library.tdsl
+seed.tdsl
+tests
+*.md
