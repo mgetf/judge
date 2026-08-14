@@ -53,6 +53,17 @@ impl GovState {
         self.submit(ev)
     }
 
+    /// Boot replay: fold an already-accepted event and journal it as accepted.
+    pub fn replay_accepted(&mut self, ev: Event) -> Result<(), Reject> {
+        self.validate_and_fold(ev.clone())?;
+        self.attempts.push(Attempt {
+            seq: self.attempts.len() as u64,
+            event: ev,
+            fold: Fold::Accepted,
+        });
+        Ok(())
+    }
+
     fn known(&self, p: &PrincipalId) -> Result<&Principal, Reject> {
         self.principals
             .get(p)

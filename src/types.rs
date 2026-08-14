@@ -1,3 +1,6 @@
+use std::fmt;
+use std::str::FromStr;
+
 use crate::ids::{CaseId, OutcomeId, PrincipalId};
 
 /// Milliseconds since epoch. Injected in tests; production adapters use the
@@ -34,6 +37,14 @@ impl Seat {
             Seat::Clerk { .. } => 0,
         }
     }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Seat::Chief => "chief",
+            Seat::Justice => "justice",
+            Seat::Clerk { .. } => "clerk",
+        }
+    }
 }
 
 /// Whether the subject is called in. Default is a record, not a trial.
@@ -63,6 +74,66 @@ pub enum DecisionKind {
     Constitutional,
     /// A case about a closed case. Verdict `vacate` nullifies the target.
     Appeal,
+}
+
+impl DecisionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Record => "record",
+            Self::Routine => "routine",
+            Self::Personnel => "personnel",
+            Self::Policy => "policy",
+            Self::Constitutional => "constitutional",
+            Self::Appeal => "appeal",
+        }
+    }
+}
+
+impl fmt::Display for DecisionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DecisionKind {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "record" => Ok(Self::Record),
+            "routine" => Ok(Self::Routine),
+            "personnel" => Ok(Self::Personnel),
+            "policy" => Ok(Self::Policy),
+            "constitutional" => Ok(Self::Constitutional),
+            "appeal" => Ok(Self::Appeal),
+            _ => Err(()),
+        }
+    }
+}
+
+impl Hearing {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Required => "required",
+        }
+    }
+}
+
+impl fmt::Display for Hearing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Hearing {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" | "" => Ok(Self::None),
+            "required" => Ok(Self::Required),
+            _ => Err(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -137,6 +208,25 @@ pub enum Phase {
     Lapsed,
     /// Verdict nullified by a successful appeal. History remains.
     Vacated,
+}
+
+impl Phase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Intake => "intake",
+            Self::Noticed => "noticed",
+            Self::Deliberation => "deliberation",
+            Self::Closed => "closed",
+            Self::Lapsed => "lapsed",
+            Self::Vacated => "vacated",
+        }
+    }
+}
+
+impl fmt::Display for Phase {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

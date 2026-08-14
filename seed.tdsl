@@ -16,3 +16,14 @@ constitution (split from this file):
 franchise is a standing bench from discord roles, snapshotted
 when deliberation opens. hearing is opt-in. a cheat case is a
 record, not a trial. verdicts are frozen snapshots.
+
+env (judge):
+  JUDGE_BIND JUDGE_PUBLIC_URL JUDGE_DATA_DIR JUDGE_CONFIG JUDGE_SESSION_SECRET
+  DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET DISCORD_REDIRECT_URI DISCORD_BOT_TOKEN
+  DISCORD_API_BASE          default https://discord.com/api/v10
+  DISCORD_AUTHORIZE_URL     default https://discord.com/oauth2/authorize
+
+env (tests / mock-discord binary):
+  point DISCORD_API_BASE and DISCORD_AUTHORIZE_URL at the mock
+  MOCK_DISCORD_USERS_JSON MOCK_DISCORD_CLIENT_ID MOCK_DISCORD_CLIENT_SECRET
+  MOCK_DISCORD_GUILD_ID
