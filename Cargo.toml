@@ -1,0 +1,39 @@
+[package]
+name = "judge"
+version = "0.1.0"
+edition = "2021"
+description = "Event-sourced court: the log is history, the reducer is the constitution."
+license = "MIT"
+publish = false
+default-run = "judge"
+
+[dependencies]
+axum = { version = "0.8", features = ["form", "query", "macros"] }
+hex = "0.4"
+maud = { version = "0.27", features = ["axum"] }
+hmac = "0.12"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+urlencoding = "2"
+
+tempfile = "3"
+
+[dev-dependencies]
+playwright-rs = "0.15"
+
+[[bin]]
+name = "judge"
+path = "src/main.rs"
+
+[[bin]]
+name = "mock-discord"
+path = "src/bin/mock_discord.rs"
