@@ -99,22 +99,14 @@ impl Action {
                 body,
                 enacts_policy,
             },
-            Action::NotifySubject { case } => Event::SubjectNotified {
-                ts,
-                case,
-                by: who,
-            },
+            Action::NotifySubject { case } => Event::SubjectNotified { ts, case, by: who },
             Action::FileResponse { case, body } => Event::ResponseFiled {
                 ts,
                 case,
                 by: who,
                 body,
             },
-            Action::OpenDeliberation { case } => Event::DeliberationOpened {
-                ts,
-                case,
-                by: who,
-            },
+            Action::OpenDeliberation { case } => Event::DeliberationOpened { ts, case, by: who },
             Action::CastVote {
                 case,
                 outcome,
@@ -126,11 +118,7 @@ impl Action {
                 outcome,
                 reason,
             },
-            Action::CloseCase { case } => Event::CaseClosed {
-                ts,
-                case,
-                by: who,
-            },
+            Action::CloseCase { case } => Event::CaseClosed { ts, case, by: who },
         }
     }
 

@@ -265,7 +265,9 @@ impl DiscordClient {
             )
             .await?;
         if !status.is_success() {
-            return Err(DiscordError::Api(format!("create channel {status}: {text}")));
+            return Err(DiscordError::Api(format!(
+                "create channel {status}: {text}"
+            )));
         }
         serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("channel json: {e}")))
     }
@@ -283,7 +285,9 @@ impl DiscordClient {
             )
             .await?;
         if !status.is_success() {
-            return Err(DiscordError::Api(format!("create message {status}: {text}")));
+            return Err(DiscordError::Api(format!(
+                "create message {status}: {text}"
+            )));
         }
         serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("message json: {e}")))
     }
@@ -307,7 +311,11 @@ impl DiscordClient {
         serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("message json: {e}")))
     }
 
-    pub async fn pin_message(&self, channel_id: &str, message_id: &str) -> Result<(), DiscordError> {
+    pub async fn pin_message(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+    ) -> Result<(), DiscordError> {
         let (status, text) = self
             .bot_send(
                 reqwest::Method::PUT,

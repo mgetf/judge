@@ -81,17 +81,20 @@ impl Default for MockDiscordConfig {
 struct Channel {
     id: String,
     name: String,
+    #[allow(dead_code)]
     topic: String,
 }
 
 #[derive(Clone)]
 struct Message {
     id: String,
+    #[allow(dead_code)]
     channel_id: String,
     author: String,
     content: String,
     embeds: Vec<Value>,
     components: Vec<Value>,
+    #[allow(dead_code)]
     attachments: Vec<Value>,
 }
 
@@ -186,7 +189,10 @@ pub async fn serve_mock_discord(cfg: MockDiscordConfig) -> std::io::Result<MockD
             "/api/v10/applications/{app_id}/guilds/{guild_id}/commands",
             put(put_commands),
         )
-        .route("/api/v10/channels/{channel_id}/messages", post(create_message))
+        .route(
+            "/api/v10/channels/{channel_id}/messages",
+            post(create_message),
+        )
         .route(
             "/api/v10/channels/{channel_id}/messages/{message_id}",
             patch(edit_message),
@@ -231,7 +237,10 @@ async fn create_channel(
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     if !require_bot(&st, &headers) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"message":"401"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"message":"401"})),
+        )
             .into_response();
     }
     let mut inner = st.inner.lock().unwrap();
@@ -272,7 +281,10 @@ async fn put_commands(
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     if !require_bot(&st, &headers) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"message":"401"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"message":"401"})),
+        )
             .into_response();
     }
     Json(body).into_response()
@@ -285,7 +297,10 @@ async fn create_message(
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     if !require_bot(&st, &headers) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"message":"401"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"message":"401"})),
+        )
             .into_response();
     }
     let mut inner = st.inner.lock().unwrap();
@@ -301,7 +316,11 @@ async fn create_message(
         id: id.clone(),
         channel_id: channel_id.clone(),
         author: "bot".into(),
-        content: body.get("content").and_then(|v| v.as_str()).unwrap_or("").into(),
+        content: body
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .into(),
         embeds: body
             .get("embeds")
             .and_then(|v| v.as_array())
@@ -329,7 +348,10 @@ async fn edit_message(
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
     if !require_bot(&st, &headers) {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({"message":"401"})))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"message":"401"})),
+        )
             .into_response();
     }
     let mut inner = st.inner.lock().unwrap();
@@ -374,9 +396,7 @@ fn user_from_query_or_cookie(
     headers: &axum::http::HeaderMap,
     as_user: Option<&str>,
 ) -> Option<MockUser> {
-    let id = as_user
-        .map(str::to_string)
-        .or_else(|| cookie_user(headers));
+    let id = as_user.map(str::to_string).or_else(|| cookie_user(headers));
     let id = id?;
     st.inner
         .lock()
@@ -495,7 +515,13 @@ async fn app_modal(State(st): State<MockState>, Form(form): Form<ModalForm>) -> 
     let payload = {
         let mut inner = st.inner.lock().unwrap();
         inner.pending_modal = None;
-        let Some(user) = inner.cfg.users.iter().find(|u| u.id == form.as_user).cloned() else {
+        let Some(user) = inner
+            .cfg
+            .users
+            .iter()
+            .find(|u| u.id == form.as_user)
+            .cloned()
+        else {
             return Redirect::to("/").into_response();
         };
         let mut rows = Vec::new();
@@ -586,7 +612,10 @@ struct AttachForm {
     label: String,
 }
 
-async fn app_attach(State(st): State<MockState>, Form(form): Form<AttachForm>) -> impl IntoResponse {
+async fn app_attach(
+    State(st): State<MockState>,
+    Form(form): Form<AttachForm>,
+) -> impl IntoResponse {
     let payload = {
         let inner = st.inner.lock().unwrap();
         let Some(user) = inner.cfg.users.iter().find(|u| u.id == form.as_user) else {
@@ -698,7 +727,12 @@ async fn apply_interaction(st: &MockState, payload: Value) {
         st.inner.lock().unwrap().flash = Some("judge interactions URL not set".into());
         return;
     };
-    let resp = match reqwest::Client::new().post(&url).json(&payload).send().await {
+    let resp = match reqwest::Client::new()
+        .post(&url)
+        .json(&payload)
+        .send()
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             st.inner.lock().unwrap().flash = Some(e.to_string());
@@ -745,7 +779,11 @@ async fn apply_interaction(st: &MockState, payload: Value) {
                         id,
                         channel_id: ch.into(),
                         author: "bot".into(),
-                        content: data.get("content").and_then(|v| v.as_str()).unwrap_or("").into(),
+                        content: data
+                            .get("content")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .into(),
                         embeds: data
                             .get("embeds")
                             .and_then(|v| v.as_array())
@@ -812,12 +850,7 @@ dialog::backdrop { background: rgba(0,0,0,0.55); }
 
 fn render_guild(inner: &Inner, user: &MockUser, channel: Option<&str>) -> Markup {
     let current = channel
-        .and_then(|id| {
-            inner
-                .channels
-                .iter()
-                .find(|c| c.id == id || c.name == id)
-        })
+        .and_then(|id| inner.channels.iter().find(|c| c.id == id || c.name == id))
         .or_else(|| {
             inner
                 .channels
@@ -959,26 +992,33 @@ fn testid_for_custom_id(custom_id: &str, label: &str) -> String {
 fn render_embed(e: &Value) -> Markup {
     let title = e.get("title").and_then(|v| v.as_str()).unwrap_or("");
     let desc = e.get("description").and_then(|v| v.as_str()).unwrap_or("");
-    let fields = e.get("fields").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let fields = e
+        .get("fields")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     let is_case = !title.is_empty() && title != "Docket";
     html! {
         div.embed data-testid=@if title == "Docket" { "docket-view" } @else { "case-view" } {
             h3 data-testid=@if is_case { "case-title" } @else { "docket-title" } { (title) }
-            @if !desc.is_empty() { p data-testid="case-brief" { (desc) } }
+            @if !desc.is_empty() {
+                p data-testid=@if is_case { "case-brief" } @else { "lede" } { (desc) }
+            }
             @for f in &fields {
                 @let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 @let value = f.get("value").and_then(|v| v.as_str()).unwrap_or("");
                 @let testid = embed_field_testid(name, value);
-                div.field data-testid=(testid) {
+                div.field data-testid=(if testid == "verdict" { "winner" } else { testid }) {
                     @if !name.trim().is_empty() { b { (name) } }
-                    (value)
                     @if testid == "verdict" {
-                        span data-testid="winner" { (value) }
+                        span data-testid="verdict" { (value) }
+                    } @else {
+                        (value)
                     }
                     @if testid == "evidence-list" {
                         @for line in value.lines() {
                             @if let Some(id) = line.split_whitespace().next().and_then(|s| s.strip_prefix("• ")) {
-                                span data-testid=(format!("evidence-{id}")) { (line) }
+                                span data-testid=(format!("evidence-{id}")) { "" }
                             }
                         }
                     }
@@ -1023,8 +1063,15 @@ fn render_pending_modal(data: &Value, user: &MockUser, channel_id: &str) -> Mark
             | crate::action::Wire::Go { verb, .. } => verb,
         })
         .unwrap_or_default();
-    let title = data.get("title").and_then(|v| v.as_str()).unwrap_or("Modal");
-    let rows = data.get("components").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let title = data
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Modal");
+    let rows = data
+        .get("components")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
     html! {
         dialog open data-testid="modal" {
             form method="post" action="/app/modal" {

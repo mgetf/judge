@@ -295,7 +295,7 @@ fn view_body(view: &View) -> Markup {
         div data-live-root data-cite=(cite_param(&view.target)) data-testid="live-root" {
             (flash(view.notice.as_deref()))
             h1 data-testid=(view.title_testid) { (view.title) }
-            p.lede data-testid="case-brief" { (view.lede) }
+            p.lede data-testid=@if matches!(view.target, Target::Cite(crate::links::Cite::Case { .. })) { "case-brief" } @else { "lede" } { (view.lede) }
             @if !view.chips.is_empty() {
                 div.chips data-testid="case-meta" {
                     @for c in &view.chips {

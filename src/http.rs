@@ -251,7 +251,9 @@ async fn eval_form(state: &AppState, headers: &HeaderMap, form: EvalForm) -> Res
     }
 }
 
-async fn live(State(state): State<AppState>) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
+async fn live(
+    State(state): State<AppState>,
+) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
     let rx = state.live.subscribe();
     let stream = unfold(rx, |mut rx| async move {
         match rx.recv().await {
@@ -260,16 +262,19 @@ async fn live(State(state): State<AppState>) -> Sse<impl futures_util::Stream<It
                 rx,
             )),
             Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => Some((
-                Ok(SseEvent::default().event("commit").data("lag")),
-                rx,
-            )),
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                Some((Ok(SseEvent::default().event("commit").data("lag")), rx))
+            }
         }
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-async fn discord_interactions(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn discord_interactions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
     if let Some(pk) = state.discord.env().public_key.as_deref() {
         let ts = headers
             .get("X-Signature-Timestamp")

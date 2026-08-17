@@ -38,15 +38,15 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .to_be_visible()
         .await
         .expect("modal");
-    page.locator("[data-testid=case-id]")
+    page.locator("[data-testid=modal] [data-testid=case-id]")
         .fill("case-cheat-1", None)
         .await
         .expect("case id");
-    page.locator("[data-testid=case-brief]")
+    page.locator("[data-testid=modal] [data-testid=case-brief]")
         .fill("STV aimbot on mge_training", None)
         .await
         .expect("brief");
-    page.locator("[data-testid=case-subject]")
+    page.locator("[data-testid=modal] [data-testid=case-subject]")
         .fill("76561198000000000", None)
         .await
         .expect("subject");
@@ -97,11 +97,11 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .click(None)
         .await
         .unwrap();
-    page.locator("[data-testid=outcome-id]")
+    page.locator("[data-testid=modal] [data-testid=outcome-id]")
         .fill("cheat-ban", None)
         .await
         .unwrap();
-    page.locator("[data-testid=outcome-body]")
+    page.locator("[data-testid=modal] [data-testid=outcome-body]")
         .fill("Permanent cheat ban", None)
         .await
         .unwrap();
@@ -114,11 +114,11 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .click(None)
         .await
         .unwrap();
-    page.locator("[data-testid=outcome-id]")
+    page.locator("[data-testid=modal] [data-testid=outcome-id]")
         .fill("no-action", None)
         .await
         .unwrap();
-    page.locator("[data-testid=outcome-body]")
+    page.locator("[data-testid=modal] [data-testid=outcome-body]")
         .fill("Not convinced", None)
         .await
         .unwrap();
@@ -140,11 +140,11 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .click(None)
         .await
         .unwrap();
-    page.locator("[data-testid=vote-outcome]")
+    page.locator("[data-testid=modal] [data-testid=vote-outcome]")
         .fill("cheat-ban", None)
         .await
         .unwrap();
-    page.locator("[data-testid=vote-reason]")
+    page.locator("[data-testid=modal] [data-testid=vote-reason]")
         .fill("Demo is unambiguous.", None)
         .await
         .unwrap();

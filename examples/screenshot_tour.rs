@@ -74,13 +74,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     expect(page.locator("[data-testid=modal]"))
         .to_be_visible()
         .await?;
-    page.locator("[data-testid=case-id]")
+    page.locator("[data-testid=modal] [data-testid=case-id]")
         .fill("case-cheat-1", None)
         .await?;
-    page.locator("[data-testid=case-brief]")
+    page.locator("[data-testid=modal] [data-testid=case-brief]")
         .fill("STV aimbot on mge_training", None)
         .await?;
-    page.locator("[data-testid=case-subject]")
+    page.locator("[data-testid=modal] [data-testid=case-subject]")
         .fill("76561198000000000", None)
         .await?;
     snap(&page, &dirs, "03-open-case-modal").await?;
@@ -96,7 +96,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     snap(&page, &dirs, "04-case-channel-intake").await?;
 
-    page.locator("[data-testid=attach-submit]").click(None).await?;
+    page.locator("[data-testid=attach-submit]")
+        .click(None)
+        .await?;
     snap(&page, &dirs, "05-attachment-evidence").await?;
 
     page.locator("[data-testid=propose-outcome]")
@@ -140,10 +142,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     page.locator("[data-testid=vote-reason]")
         .fill("Demo is unambiguous.", None)
         .await?;
-    page.locator("[data-testid=vote-submit]").click(None).await?;
+    page.locator("[data-testid=vote-submit]")
+        .click(None)
+        .await?;
     snap(&page, &dirs, "08-ballot").await?;
 
-    page.locator("[data-testid=close-submit]").click(None).await?;
+    page.locator("[data-testid=close-submit]")
+        .click(None)
+        .await?;
     expect(page.locator("[data-testid=verdict]"))
         .to_be_visible()
         .await?;

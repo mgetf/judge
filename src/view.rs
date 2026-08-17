@@ -170,8 +170,8 @@ pub fn see_case(
     // hides buttons the viewer cannot press.
     let public = who.is_none();
     let seated = public || who.is_some_and(|p| p.is_voting_seat());
-    let on_bench = public
-        || who.is_some_and(|p| case.bench.as_ref().and_then(|b| b.seat(&p.id)).is_some());
+    let on_bench =
+        public || who.is_some_and(|p| case.bench.as_ref().and_then(|b| b.seat(&p.id)).is_some());
     let is_subject = public || who.is_some_and(|p| case.subject.as_ref() == Some(&p.id));
 
     let subject = case
@@ -354,7 +354,14 @@ pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
                     false,
                     "discord id",
                 ),
-                field("target_case", "Appeal target", "case-target", false, false, ""),
+                field(
+                    "target_case",
+                    "Appeal target",
+                    "case-target",
+                    false,
+                    false,
+                    "",
+                ),
                 field("brief", "Brief", "case-brief", true, true, ""),
             ],
         }),
@@ -382,7 +389,14 @@ pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
             fields: vec![
                 field("id", "Id", "outcome-id", false, true, ""),
                 field("body", "Body", "outcome-body", true, true, ""),
-                field("enacts_policy", "Enacts policy", "outcome-policy", false, false, ""),
+                field(
+                    "enacts_policy",
+                    "Enacts policy",
+                    "outcome-policy",
+                    false,
+                    false,
+                    "",
+                ),
             ],
         }),
         "vote" => Ok(Modal {

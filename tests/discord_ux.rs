@@ -124,7 +124,10 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         .status()
         .is_success());
 
-    for (id, body) in [("cheat-ban", "Permanent cheat ban"), ("no-action", "Not convinced")] {
+    for (id, body) in [
+        ("cheat-ban", "Permanent cheat ban"),
+        ("no-action", "Not convinced"),
+    ] {
         let outcome = json!({
             "type": 5,
             "channel_id": case_ch,
@@ -205,7 +208,11 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         .send()
         .await
         .unwrap();
-    assert!(closed.status().is_success(), "{}", closed.text().await.unwrap());
+    assert!(
+        closed.status().is_success(),
+        "{}",
+        closed.text().await.unwrap()
+    );
 
     let case_page = client
         .get(format!("{}/cases/case-cheat-1", stack.judge_url))
@@ -217,8 +224,14 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         .unwrap();
     assert!(case_page.contains("data-testid=\"verdict\""), "{case_page}");
     assert!(case_page.contains("cheat-ban"), "{case_page}");
-    assert!(case_page.contains("data-testid=\"evidence-demo-stv\""), "{case_page}");
-    assert!(case_page.contains("https://mge.tf/demos/abc"), "{case_page}");
+    assert!(
+        case_page.contains("data-testid=\"evidence-demo-stv\""),
+        "{case_page}"
+    );
+    assert!(
+        case_page.contains("https://mge.tf/demos/abc"),
+        "{case_page}"
+    );
 
     stack.abort();
 }

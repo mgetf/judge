@@ -15,7 +15,8 @@ use crate::events::Event;
 use crate::ids::{CaseId, PrincipalId};
 use crate::state::Principal;
 use crate::view::{
-    case_channel_name, discord_modal, discord_payload, modal_for, see_case, see_docket, Target, View,
+    case_channel_name, discord_modal, discord_payload, modal_for, see_case, see_docket, Target,
+    View,
 };
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -46,7 +47,8 @@ impl DiscordBindings {
         }
         let s = serde_json::to_string_pretty(self)
             .map_err(|e| AppError::BadRequest(format!("bindings json: {e}")))?;
-        std::fs::write(path, s).map_err(|e| AppError::BadRequest(format!("bindings write: {e}")))?;
+        std::fs::write(path, s)
+            .map_err(|e| AppError::BadRequest(format!("bindings write: {e}")))?;
         Ok(())
     }
 
@@ -205,7 +207,12 @@ async fn refresh_docket(state: &AppState) -> Result<(), AppError> {
     let mut b = state.bindings.write().await;
     if let (Some(ch), Some(mid)) = (b.docket_channel_id.clone(), b.docket_message_id.clone()) {
         drop(b);
-        if state.discord.edit_message(&ch, &mid, &payload).await.is_ok() {
+        if state
+            .discord
+            .edit_message(&ch, &mid, &payload)
+            .await
+            .is_ok()
+        {
             return Ok(());
         }
         b = state.bindings.write().await;
@@ -379,7 +386,11 @@ async fn interaction_principal(state: &AppState, body: &Value) -> Result<Princip
         .ok_or(AppError::Unauthorized)
 }
 
-async fn handle_component(state: &AppState, who: &Principal, body: &Value) -> Result<Value, AppError> {
+async fn handle_component(
+    state: &AppState,
+    who: &Principal,
+    body: &Value,
+) -> Result<Value, AppError> {
     let custom_id = body
         .pointer("/data/custom_id")
         .and_then(|v| v.as_str())
@@ -421,7 +432,11 @@ async fn handle_modal(state: &AppState, who: &Principal, body: &Value) -> Result
     eval_and_ack(state, who, action, body, 7).await
 }
 
-async fn handle_command(state: &AppState, who: &Principal, body: &Value) -> Result<Value, AppError> {
+async fn handle_command(
+    state: &AppState,
+    who: &Principal,
+    body: &Value,
+) -> Result<Value, AppError> {
     let name = body
         .pointer("/data/name")
         .and_then(|v| v.as_str())
@@ -441,9 +456,9 @@ async fn handle_command(state: &AppState, who: &Principal, body: &Value) -> Resu
     if name == "evidence" {
         if let Some((id, url, filename)) = resolved_attachment(body) {
             fields.entry("body".into()).or_insert(url);
-            fields.entry("id".into()).or_insert_with(|| {
-                slug_id(&id).or_else(|| slug_id(&filename)).unwrap_or(id)
-            });
+            fields
+                .entry("id".into())
+                .or_insert_with(|| slug_id(&filename).or_else(|| slug_id(&id)).unwrap_or(id));
             if !fields.contains_key("label") {
                 fields.insert("label".into(), filename);
             }
@@ -492,7 +507,10 @@ async fn eval_and_ack(
 }
 
 async fn view_for_interaction_channel(state: &AppState, body: &Value) -> View {
-    let ch = body.get("channel_id").and_then(|v| v.as_str()).unwrap_or("");
+    let ch = body
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let b = state.bindings.read().await;
     if b.docket_channel_id.as_deref() == Some(ch) {
         drop(b);
@@ -589,7 +607,9 @@ fn slug_id(s: &str) -> Option<String> {
     if slug.is_empty() {
         None
     } else {
-        crate::ids::EvidenceId::parse(&slug).ok().map(|e| e.to_string())
+        crate::ids::EvidenceId::parse(&slug)
+            .ok()
+            .map(|e| e.to_string())
     }
 }
 
