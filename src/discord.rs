@@ -15,6 +15,10 @@ pub struct DiscordEnv {
     /// Default `https://discord.com/oauth2/authorize`. Point at the mock in tests.
     pub authorize_url: String,
     pub bot_token: Option<String>,
+    /// Hex-encoded Ed25519 public key. Empty in mock/dev (signature skipped).
+    pub public_key: Option<String>,
+    /// Application id for command registration. Defaults to `client_id`.
+    pub application_id: String,
 }
 
 impl DiscordEnv {
@@ -28,6 +32,10 @@ impl DiscordEnv {
         let redirect_uri = std::env::var("DISCORD_REDIRECT_URI").unwrap_or_else(|_| {
             format!("{}/auth/discord/callback", public_url.trim_end_matches('/'))
         });
+        let application_id = std::env::var("DISCORD_APPLICATION_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| client_id.clone());
         Ok(Self {
             client_id,
             client_secret,
@@ -39,6 +47,10 @@ impl DiscordEnv {
             bot_token: std::env::var("DISCORD_BOT_TOKEN")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            public_key: std::env::var("DISCORD_PUBLIC_KEY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            application_id,
         })
     }
 
@@ -201,6 +213,147 @@ impl DiscordClient {
         }
         Ok(out)
     }
+
+    fn bot_token(&self) -> Result<&str, DiscordError> {
+        self.env.bot_token.as_deref().ok_or(DiscordError::NoBot)
+    }
+
+    async fn bot_send(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<(reqwest::StatusCode, String), DiscordError> {
+        let token = self.bot_token()?;
+        let url = format!("{}{path}", self.env.api_base.trim_end_matches('/'));
+        let mut req = self
+            .http
+            .request(method, url)
+            .header("Authorization", format!("Bot {token}"))
+            .header("Content-Type", "application/json");
+        if let Some(body) = body {
+            req = req.json(body);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+        Ok((status, text))
+    }
+
+    pub async fn create_guild_channel(
+        &self,
+        guild_id: &str,
+        name: &str,
+        topic: Option<&str>,
+        parent_id: Option<&str>,
+    ) -> Result<CreatedChannel, DiscordError> {
+        let mut body = serde_json::json!({
+            "name": name,
+            "type": 0,
+        });
+        if let Some(topic) = topic {
+            body["topic"] = serde_json::Value::String(topic.to_string());
+        }
+        if let Some(parent) = parent_id {
+            body["parent_id"] = serde_json::Value::String(parent.to_string());
+        }
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::POST,
+                &format!("/guilds/{guild_id}/channels"),
+                Some(&body),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!("create channel {status}: {text}")));
+        }
+        serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("channel json: {e}")))
+    }
+
+    pub async fn create_message(
+        &self,
+        channel_id: &str,
+        payload: &serde_json::Value,
+    ) -> Result<CreatedMessage, DiscordError> {
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::POST,
+                &format!("/channels/{channel_id}/messages"),
+                Some(payload),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!("create message {status}: {text}")));
+        }
+        serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("message json: {e}")))
+    }
+
+    pub async fn edit_message(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        payload: &serde_json::Value,
+    ) -> Result<CreatedMessage, DiscordError> {
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::PATCH,
+                &format!("/channels/{channel_id}/messages/{message_id}"),
+                Some(payload),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!("edit message {status}: {text}")));
+        }
+        serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("message json: {e}")))
+    }
+
+    pub async fn pin_message(&self, channel_id: &str, message_id: &str) -> Result<(), DiscordError> {
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::PUT,
+                &format!("/channels/{channel_id}/pins/{message_id}"),
+                None,
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!("pin {status}: {text}")));
+        }
+        Ok(())
+    }
+
+    pub async fn overwrite_guild_commands(
+        &self,
+        guild_id: &str,
+        commands: &[serde_json::Value],
+    ) -> Result<(), DiscordError> {
+        let app = &self.env.application_id;
+        let body = serde_json::Value::Array(commands.to_vec());
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::PUT,
+                &format!("/applications/{app}/guilds/{guild_id}/commands"),
+                Some(&body),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!("commands {status}: {text}")));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreatedChannel {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreatedMessage {
+    pub id: String,
+    #[serde(default)]
+    pub channel_id: String,
 }
 
 pub fn roster_from_members(cfg: &CourtConfig, members: &[DiscordMember]) -> Vec<RosterMember> {

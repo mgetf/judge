@@ -57,9 +57,12 @@ pub async fn start_stack() -> Result<Stack, Box<dyn std::error::Error>> {
             api_base: mock.api_base(),
             authorize_url: mock.authorize_url(),
             bot_token: Some("mock-bot".into()),
+            public_key: None,
+            application_id: "test-client".into(),
         },
     };
     let judge = serve_on(listener, opts).await?;
+    mock.set_interactions_url(format!("{public_url}/discord/interactions"));
     Ok(Stack {
         mock,
         judge,

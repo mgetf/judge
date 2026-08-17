@@ -9,6 +9,8 @@ default-run = "judge"
 
 [dependencies]
 axum = { version = "0.8", features = ["form", "query", "macros"] }
+ed25519-dalek = "2"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hex = "0.4"
 maud = { version = "0.27", features = ["axum"] }
 hmac = "0.12"

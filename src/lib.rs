@@ -15,7 +15,9 @@
 //!     vote, and their acts are permanently marked.
 //!   * Everything that exists has a stable link path.
 
+pub mod action;
 pub mod app;
+pub mod bot;
 pub mod clock;
 pub mod config;
 pub mod discord;
@@ -25,6 +27,7 @@ pub mod html;
 pub mod http;
 pub mod ids;
 pub mod links;
+pub mod live;
 pub mod mock_discord;
 pub mod reducer;
 pub mod scoring;
@@ -32,6 +35,7 @@ pub mod session;
 pub mod state;
 pub mod testing;
 pub mod types;
+pub mod view;
 
 pub use app::{serve_judge, serve_on, AppState, JudgeOptions, JudgeServer};
 pub use config::{ConfigSeat, CourtConfig, RoleBinding};

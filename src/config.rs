@@ -13,6 +13,12 @@ pub struct CourtConfig {
     pub guild_id: String,
     pub owner_discord_id: String,
     pub roles: BTreeMap<String, RoleBinding>,
+    /// Existing #docket channel. Created on boot when omitted.
+    #[serde(default)]
+    pub docket_channel_id: Option<String>,
+    /// Category under which case channels are created.
+    #[serde(default)]
+    pub court_category_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,39 +1,50 @@
+use std::convert::Infallible;
+
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
-use maud::Markup;
 use axum::routing::{get, post};
 use axum::{Form, Router};
+use futures_util::stream::unfold;
+use maud::Markup;
 use serde::Deserialize;
 use tower_http::trace::TraceLayer;
 
+use crate::action::EvalForm;
 use crate::app::{commit, sync_roster, AppError, AppState};
+use crate::bot::{self, current_docket_view};
 use crate::clock::now_ms;
 use crate::events::Event;
 use crate::html;
-use crate::ids::{CaseId, EvidenceId, NoteId, OutcomeId, PolicyId, PrincipalId};
+use crate::ids::{CaseId, PolicyId, PrincipalId};
 use crate::session::{
     self, cookie_from_headers, decode, encode, principal_from_headers, random_state,
     OAUTH_STATE_COOKIE, SESSION_COOKIE,
 };
 use crate::state::{Fold, Principal};
-use crate::types::{DecisionKind, Hearing};
+use crate::view::{see_case, see_docket, Target};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(docket))
+        .route("/see", get(see))
+        .route("/eval", post(eval))
+        .route("/live", get(live))
         .route("/login", get(login))
         .route("/logout", get(logout))
         .route("/auth/discord/callback", get(oauth_callback))
-        .route("/cases", post(open_case))
+        .route("/discord/interactions", post(discord_interactions))
+        .route("/cases", post(eval))
         .route("/cases/{id}", get(show_case))
-        .route("/cases/{id}/evidence", post(file_evidence))
-        .route("/cases/{id}/outcomes", post(propose_outcome))
-        .route("/cases/{id}/notify", post(notify_subject))
-        .route("/cases/{id}/respond", post(respond))
-        .route("/cases/{id}/deliberate", post(deliberate))
-        .route("/cases/{id}/vote", post(vote))
-        .route("/cases/{id}/close", post(close_case))
+        .route("/cases/{id}/evidence", post(eval))
+        .route("/cases/{id}/outcomes", post(eval))
+        .route("/cases/{id}/notify", post(eval_notify))
+        .route("/cases/{id}/respond", post(eval))
+        .route("/cases/{id}/deliberate", post(eval_deliberate))
+        .route("/cases/{id}/vote", post(eval))
+        .route("/cases/{id}/close", post(eval_close))
         .route("/people/{id}", get(show_person))
         .route("/policies/{*id}", get(show_policy))
         .route("/log", get(show_log))
@@ -80,18 +91,216 @@ fn redirect_with_session(
 }
 
 async fn docket(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let who = viewer(&state, &headers).await;
-    let g = state.gov.read().await;
-    let mut cases: Vec<_> = g.cases.values().collect();
-    cases.sort_by(|a, b| b.opened_ts.cmp(&a.opened_ts));
-    let mut bench: Vec<_> = g
-        .principals
-        .values()
-        .filter(|p| p.seat.is_some())
-        .cloned()
-        .collect();
-    bench.sort_by(|a, b| a.id.cmp(&b.id));
-    html_ok(html::docket(who.as_ref(), &cases, &bench, None))
+    see_target(&state, &headers, Target::Docket, None).await
+}
+
+#[derive(Deserialize)]
+struct SeeQ {
+    cite: Option<String>,
+}
+
+async fn see(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<SeeQ>) -> Response {
+    let target = parse_cite(q.cite.as_deref().unwrap_or("docket"));
+    see_target(&state, &headers, target, None).await
+}
+
+fn parse_cite(s: &str) -> Target {
+    if s.is_empty() || s == "docket" {
+        return Target::Docket;
+    }
+    if let Some(id) = s.strip_prefix("case:") {
+        if let Ok(id) = CaseId::parse(id) {
+            return Target::Cite(crate::links::Cite::Case { id });
+        }
+    }
+    Target::Docket
+}
+
+async fn see_target(
+    state: &AppState,
+    headers: &HeaderMap,
+    target: Target,
+    notice: Option<&str>,
+) -> Response {
+    let who = viewer(state, headers).await;
+    match target {
+        Target::Docket => {
+            let mut view = current_docket_view(state, notice).await;
+            let g = state.gov.read().await;
+            let mut cases: Vec<_> = g.cases.values().collect();
+            cases.sort_by(|a, b| b.opened_ts.cmp(&a.opened_ts));
+            let mut bench: Vec<_> = g
+                .principals
+                .values()
+                .filter(|p| p.seat.is_some())
+                .cloned()
+                .collect();
+            bench.sort_by(|a, b| a.id.cmp(&b.id));
+            view = see_docket(
+                who.as_ref(),
+                &cases,
+                &bench,
+                notice,
+                view.channel_url.clone(),
+            );
+            html_ok(html::render_view(who.as_ref(), &view))
+        }
+        Target::Cite(crate::links::Cite::Case { id }) => {
+            let g = state.gov.read().await;
+            let Some(case) = g.cases.get(&id) else {
+                return AppError::NotFound.into_response();
+            };
+            let channel_url = {
+                let b = state.bindings.read().await;
+                b.cases
+                    .get(id.as_str())
+                    .map(|c| bot::channel_link(&state.config.guild_id, &c.channel_id))
+            };
+            let view = see_case(who.as_ref(), case, &g.principals, notice, channel_url);
+            html_ok(html::render_view(who.as_ref(), &view))
+        }
+        Target::Cite(_) => AppError::NotFound.into_response(),
+    }
+}
+
+async fn eval(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Form(mut form): Form<EvalForm>,
+) -> Response {
+    if form.action.is_empty() {
+        if !form.brief.is_empty() {
+            form.action = "open_case".into();
+        } else if !form.label.is_empty() {
+            form.action = "file_evidence".into();
+        } else if !form.reason.is_empty() {
+            form.action = "vote".into();
+        } else if !form.body.is_empty() && !form.id.is_empty() {
+            form.action = "propose_outcome".into();
+        } else if !form.body.is_empty() {
+            form.action = "respond".into();
+        }
+    }
+    eval_form(&state, &headers, form).await
+}
+
+async fn eval_notify(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(case): Path<String>,
+) -> Response {
+    eval_form(
+        &state,
+        &headers,
+        EvalForm {
+            action: "notify".into(),
+            case,
+            ..EvalForm::default()
+        },
+    )
+    .await
+}
+
+async fn eval_deliberate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(case): Path<String>,
+) -> Response {
+    eval_form(
+        &state,
+        &headers,
+        EvalForm {
+            action: "deliberate".into(),
+            case,
+            ..EvalForm::default()
+        },
+    )
+    .await
+}
+
+async fn eval_close(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(case): Path<String>,
+) -> Response {
+    eval_form(
+        &state,
+        &headers,
+        EvalForm {
+            action: "close".into(),
+            case,
+            ..EvalForm::default()
+        },
+    )
+    .await
+}
+
+async fn eval_form(state: &AppState, headers: &HeaderMap, form: EvalForm) -> Response {
+    let who = match require_viewer(state, headers).await {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let action = match form.parse() {
+        Ok(a) => a,
+        Err(e) => return html_ok(html::flash_page(Some(&who), &e)),
+    };
+    let cite = action.cite();
+    match commit(state, action.into_event(who.id.clone(), now_ms())).await {
+        Ok(()) => redirect_see(&cite.path()),
+        Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
+    }
+}
+
+async fn live(State(state): State<AppState>) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
+    let rx = state.live.subscribe();
+    let stream = unfold(rx, |mut rx| async move {
+        match rx.recv().await {
+            Ok(seq) => Some((
+                Ok(SseEvent::default().event("commit").data(seq.to_string())),
+                rx,
+            )),
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => Some((
+                Ok(SseEvent::default().event("commit").data("lag")),
+                rx,
+            )),
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn discord_interactions(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if let Some(pk) = state.discord.env().public_key.as_deref() {
+        let ts = headers
+            .get("X-Signature-Timestamp")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let sig = headers
+            .get("X-Signature-Ed25519")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !bot::verify_signature(pk, ts, &body, sig) {
+            return (StatusCode::UNAUTHORIZED, "bad signature").into_response();
+        }
+    }
+    let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    match bot::handle_interaction(&state, &parsed).await {
+        Ok(v) => (StatusCode::OK, axum::Json(v)).into_response(),
+        Err(e) => {
+            tracing::warn!("interaction: {e}");
+            (
+                StatusCode::OK,
+                axum::Json(serde_json::json!({
+                    "type": 4,
+                    "data": { "content": e.to_string(), "flags": 64 }
+                })),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn login(State(state): State<AppState>) -> Response {
@@ -176,63 +385,10 @@ async fn oauth_callback(
     redirect_with_session("/", &state.session_secret, &pid, state.secure_cookies())
 }
 
-#[derive(Deserialize)]
-struct OpenCaseForm {
-    id: String,
-    kind: String,
-    #[serde(default)]
-    hearing: String,
-    brief: String,
-    #[serde(default)]
-    subject: String,
-    #[serde(default)]
-    target_case: String,
-}
-
 async fn require_viewer(state: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
     viewer(state, headers)
         .await
         .ok_or_else(|| html_ok(html::login_required("Log in to act.")))
-}
-
-async fn open_case(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(form): Form<OpenCaseForm>,
-) -> Response {
-    let who = match require_viewer(&state, &headers).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let id = match CaseId::parse(form.id.trim()) {
-        Ok(id) => id,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-    };
-    let kind = match form.kind.parse::<DecisionKind>() {
-        Ok(k) => k,
-        Err(()) => return html_ok(html::flash_page(Some(&who), "unknown kind")),
-    };
-    let hearing = form.hearing.parse::<Hearing>().unwrap_or(Hearing::None);
-    let subject = optional_pid(&form.subject);
-    let target_case = optional_cid(&form.target_case);
-    match commit(
-        &state,
-        Event::CaseOpened {
-            ts: now_ms(),
-            id: id.clone(),
-            kind,
-            hearing,
-            opened_by: who.id.clone(),
-            brief: form.brief,
-            subject,
-            target_case,
-        },
-    )
-    .await
-    {
-        Ok(()) => redirect_see(&format!("/cases/{id}")),
-        Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
-    }
 }
 
 async fn show_case(
@@ -240,248 +396,16 @@ async fn show_case(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let who = viewer(&state, &headers).await;
     let Ok(cid) = CaseId::parse(&id) else {
         return AppError::NotFound.into_response();
     };
-    let g = state.gov.read().await;
-    let Some(case) = g.cases.get(&cid) else {
-        return AppError::NotFound.into_response();
-    };
-    html_ok(html::case_page(who.as_ref(), case, None, &g.principals))
-}
-
-#[derive(Deserialize)]
-struct EvidenceForm {
-    id: String,
-    label: String,
-    body: String,
-}
-
-async fn file_evidence(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(case): Path<String>,
-    Form(form): Form<EvidenceForm>,
-) -> Response {
-    let who = match require_viewer(&state, &headers).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let ev = match parse_case_evidence(&case, &form) {
-        Ok(ev) => ev,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e)),
-    };
-    match commit(
+    see_target(
         &state,
-        Event::EvidenceFiled {
-            ts: now_ms(),
-            case: ev.0,
-            by: who.id.clone(),
-            id: ev.1,
-            label: form.label,
-            body: form.body,
-        },
+        &headers,
+        Target::Cite(crate::links::Cite::Case { id: cid }),
+        None,
     )
     .await
-    {
-        Ok(()) => redirect_see(&format!("/cases/{case}")),
-        Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
-    }
-}
-
-fn parse_case_evidence(case: &str, form: &EvidenceForm) -> Result<(CaseId, EvidenceId), String> {
-    Ok((
-        CaseId::parse(case).map_err(|e| e.to_string())?,
-        EvidenceId::parse(form.id.trim()).map_err(|e| e.to_string())?,
-    ))
-}
-
-#[derive(Deserialize)]
-struct OutcomeForm {
-    id: String,
-    body: String,
-    #[serde(default)]
-    enacts_policy: String,
-}
-
-async fn propose_outcome(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(case): Path<String>,
-    Form(form): Form<OutcomeForm>,
-) -> Response {
-    let who = match require_viewer(&state, &headers).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let cid = match CaseId::parse(&case) {
-        Ok(c) => c,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-    };
-    let oid = match OutcomeId::parse(form.id.trim()) {
-        Ok(o) => o,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-    };
-    let policy = if form.enacts_policy.trim().is_empty() {
-        None
-    } else {
-        match PolicyId::parse(form.enacts_policy.trim()) {
-            Ok(p) => Some(p),
-            Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-        }
-    };
-    match commit(
-        &state,
-        Event::OutcomeProposed {
-            ts: now_ms(),
-            case: cid,
-            by: who.id.clone(),
-            id: oid,
-            body: form.body,
-            enacts_policy: policy,
-        },
-    )
-    .await
-    {
-        Ok(()) => redirect_see(&format!("/cases/{case}")),
-        Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
-    }
-}
-
-async fn notify_subject(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(case): Path<String>,
-) -> Response {
-    actor_case_event(&state, &headers, &case, |who, cid| Event::SubjectNotified {
-        ts: now_ms(),
-        case: cid,
-        by: who,
-    })
-    .await
-}
-
-async fn deliberate(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(case): Path<String>,
-) -> Response {
-    actor_case_event(&state, &headers, &case, |who, cid| {
-        Event::DeliberationOpened {
-            ts: now_ms(),
-            case: cid,
-            by: who,
-        }
-    })
-    .await
-}
-
-async fn close_case(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(case): Path<String>,
-) -> Response {
-    actor_case_event(&state, &headers, &case, |who, cid| Event::CaseClosed {
-        ts: now_ms(),
-        case: cid,
-        by: who,
-    })
-    .await
-}
-
-async fn actor_case_event<F>(state: &AppState, headers: &HeaderMap, case: &str, f: F) -> Response
-where
-    F: FnOnce(PrincipalId, CaseId) -> Event,
-{
-    let who = match require_viewer(state, headers).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let cid = match CaseId::parse(case) {
-        Ok(c) => c,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-    };
-    match commit(state, f(who.id.clone(), cid)).await {
-        Ok(()) => redirect_see(&format!("/cases/{case}")),
-        Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
-    }
-}
-
-#[derive(Deserialize)]
-struct RespondForm {
-    body: String,
-}
-
-async fn respond(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(case): Path<String>,
-    Form(form): Form<RespondForm>,
-) -> Response {
-    let who = match require_viewer(&state, &headers).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let cid = match CaseId::parse(&case) {
-        Ok(c) => c,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-    };
-    match commit(
-        &state,
-        Event::ResponseFiled {
-            ts: now_ms(),
-            case: cid,
-            by: who.id.clone(),
-            body: form.body,
-        },
-    )
-    .await
-    {
-        Ok(()) => redirect_see(&format!("/cases/{case}")),
-        Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
-    }
-}
-
-#[derive(Deserialize)]
-struct VoteForm {
-    outcome: String,
-    reason: String,
-}
-
-async fn vote(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(case): Path<String>,
-    Form(form): Form<VoteForm>,
-) -> Response {
-    let who = match require_viewer(&state, &headers).await {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    let cid = match CaseId::parse(&case) {
-        Ok(c) => c,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-    };
-    let oid = match OutcomeId::parse(form.outcome.trim()) {
-        Ok(o) => o,
-        Err(e) => return html_ok(html::flash_page(Some(&who), &e.to_string())),
-    };
-    match commit(
-        &state,
-        Event::VoteCast {
-            ts: now_ms(),
-            case: cid,
-            voter: who.id.clone(),
-            outcome: oid,
-            reason: form.reason,
-        },
-    )
-    .await
-    {
-        Ok(()) => redirect_see(&format!("/cases/{case}")),
-        Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
-    }
 }
 
 async fn show_person(
@@ -546,25 +470,4 @@ async fn manual_sync(State(state): State<AppState>, headers: HeaderMap) -> Respo
         Ok(()) => redirect_see("/"),
         Err(e) => html_ok(html::flash_page(Some(&who), &e.to_string())),
     }
-}
-
-fn optional_pid(s: &str) -> Option<PrincipalId> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    PrincipalId::parse(s).ok()
-}
-
-fn optional_cid(s: &str) -> Option<CaseId> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    CaseId::parse(s).ok()
-}
-
-#[allow(dead_code)]
-fn _note_id(s: &str) -> Result<NoteId, String> {
-    NoteId::parse(s).map_err(|e| e.to_string())
 }
