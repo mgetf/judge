@@ -38,6 +38,7 @@ pub fn router(state: AppState) -> Router {
         .route("/discord/interactions", post(discord_interactions))
         .route("/cases", post(eval))
         .route("/cases/{id}", get(show_case))
+        .route("/cases/{id}/transcript", get(show_transcript))
         .route("/cases/{id}/evidence", post(eval))
         .route("/cases/{id}/outcomes", post(eval))
         .route("/cases/{id}/notify", post(eval_notify))
@@ -443,6 +444,22 @@ async fn show_policy(
         return AppError::NotFound.into_response();
     };
     html_ok(html::policy_page(who.as_ref(), p))
+}
+
+async fn show_transcript(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    let Ok(cid) = CaseId::parse(&id) else {
+        return AppError::NotFound.into_response();
+    };
+    let path = bot::transcript_file(&state, &cid);
+    match std::fs::read_to_string(path) {
+        Ok(html) => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            html,
+        )
+            .into_response(),
+        Err(_) => AppError::NotFound.into_response(),
+    }
 }
 
 async fn show_log(State(state): State<AppState>, headers: HeaderMap) -> Response {

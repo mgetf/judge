@@ -1,6 +1,6 @@
-//! Discord is the court. Each case is a channel. The bot posts a live `see`
-//! message and `eval`s button / slash / modal acts. Chat and attachments stay
-//! in Discord.
+//! Discord is the court. Each case is a Ticket Tool-shaped ticket: private
+//! channel, pinned live `see`, two-step close, closed category, transcript.
+//! Chat and attachments stay in Discord.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -14,6 +14,10 @@ use crate::clock::now_ms;
 use crate::events::Event;
 use crate::ids::{CaseId, PrincipalId};
 use crate::state::Principal;
+use crate::ticket::{
+    close_ask, closed_channel_name, closed_overwrites, opened_overwrites, transcript_html, TALK,
+    VIEW_CHANNEL,
+};
 use crate::view::{
     case_channel_name, discord_modal, discord_payload, modal_for, see_case, see_docket, Target,
     View,
@@ -113,7 +117,25 @@ pub fn guild_commands() -> Vec<Value> {
         }),
         serde_json::json!({
             "name": "close",
-            "description": "Close the case"
+            "description": "Ask to close this ticket (Ticket Tool two-step close)"
+        }),
+        serde_json::json!({
+            "name": "add",
+            "description": "Add a user to this ticket",
+            "options": [
+                { "name": "user", "description": "User to add", "type": 6, "required": true }
+            ]
+        }),
+        serde_json::json!({
+            "name": "remove",
+            "description": "Remove a user from this ticket",
+            "options": [
+                { "name": "user", "description": "User to remove", "type": 6, "required": true }
+            ]
+        }),
+        serde_json::json!({
+            "name": "transcript",
+            "description": "Save an HTML transcript of this ticket"
         }),
         serde_json::json!({
             "name": "docket",
@@ -153,13 +175,17 @@ pub async fn after_commit(state: &AppState, ev: &Event) -> Result<(), AppError> 
         | Event::OutcomeProposed { case, .. }
         | Event::DeliberationOpened { case, .. }
         | Event::VoteCast { case, .. }
-        | Event::CaseClosed { case, .. }
         | Event::ClerkNoteFiled { case, .. }
         | Event::PolicyCited { case, .. }
         | Event::Recused { case, .. }
         | Event::RecusalLifted { case, .. } => {
             refresh_case(state, case).await?;
             refresh_docket(state).await?;
+        }
+        Event::CaseClosed { case, .. } => {
+            refresh_case(state, case).await?;
+            refresh_docket(state).await?;
+            archive_ticket(state, case).await?;
         }
         Event::RosterSynced { .. } | Event::PrincipalSeen { .. } => {
             refresh_docket(state).await?;
@@ -177,15 +203,44 @@ async fn ensure_case_channel(state: &AppState, id: &CaseId, brief: &str) -> Resu
     }
     let name = case_channel_name(id);
     let parent = state.config.court_category_id.as_deref();
+    let (overwrites, ping) = {
+        let g = state.gov.read().await;
+        let case = g.cases.get(id).ok_or(AppError::NotFound)?;
+        let mut users = vec![case.opened_by.to_string()];
+        if let Some(s) = &case.subject {
+            if s.as_str() != case.opened_by.as_str() {
+                users.push(s.to_string());
+            }
+        }
+        let roles: Vec<String> = state.config.roles.keys().cloned().collect();
+        let overwrites = opened_overwrites(&state.config.guild_id, &roles, &users);
+        let ping = format!(
+            "<@{}> opened this ticket.{}",
+            case.opened_by,
+            case.subject
+                .as_ref()
+                .map(|s| format!(" Subject: <@{s}>"))
+                .unwrap_or_default()
+        );
+        (overwrites, ping)
+    };
     let ch = state
         .discord
-        .create_guild_channel(&state.config.guild_id, &name, Some(brief), parent)
+        .create_guild_channel(
+            &state.config.guild_id,
+            &name,
+            Some(brief),
+            parent,
+            Some(&overwrites),
+        )
         .await
         .map_err(|e| AppError::Discord(e.to_string()))?;
     let view = current_case_view(state, id, None).await?;
+    let mut payload = discord_payload(&view);
+    payload["content"] = serde_json::Value::String(ping);
     let msg = state
         .discord
-        .create_message(&ch.id, &discord_payload(&view))
+        .create_message(&ch.id, &payload)
         .await
         .map_err(|e| AppError::Discord(e.to_string()))?;
     let _ = state.discord.pin_message(&ch.id, &msg.id).await;
@@ -230,6 +285,7 @@ async fn refresh_docket(state: &AppState) -> Result<(), AppError> {
                 "docket",
                 Some("Live court docket"),
                 state.config.court_category_id.as_deref(),
+                None,
             )
             .await
             .map_err(|e| AppError::Discord(e.to_string()))?;
@@ -404,7 +460,23 @@ async fn handle_component(
             }))
         }
         Wire::Go { verb, case } => {
+            if verb == "closerequest" {
+                return Ok(close_ask(case.as_deref()));
+            }
+            if verb == "cancelclose" {
+                return Ok(serde_json::json!({
+                    "type": 7,
+                    "data": { "content": "Close cancelled.", "components": [] }
+                }));
+            }
             let action = action_from_verb(&verb, case.as_deref(), &BTreeMap::new())?;
+            if verb == "close" {
+                commit(state, action.into_event(who.id.clone(), now_ms())).await?;
+                return Ok(serde_json::json!({
+                    "type": 7,
+                    "data": { "content": "Ticket closed.", "components": [] }
+                }));
+            }
             eval_and_ack(state, who, action, body, 7).await
         }
         Wire::Do { .. } => Ok(ephemeral("use the modal submit")),
@@ -446,6 +518,22 @@ async fn handle_command(
         let mut data = discord_payload(&view);
         data["flags"] = serde_json::json!(64);
         return Ok(serde_json::json!({ "type": 4, "data": data }));
+    }
+    if name == "close" {
+        let case = case_from_channel(state, body).await;
+        return Ok(close_ask(case.as_deref()));
+    }
+    if name == "add" || name == "remove" {
+        return ticket_member(state, body, name == "add").await;
+    }
+    if name == "transcript" {
+        if let Some(id) = case_from_channel(state, body).await {
+            if let Ok(cid) = CaseId::parse(&id) {
+                let url = save_transcript(state, &cid).await?;
+                return Ok(ephemeral(&format!("Transcript: {url}")));
+            }
+        }
+        return Ok(ephemeral("run this in a ticket"));
     }
     let mut fields = command_values(body);
     if !fields.contains_key("case") {
@@ -610,6 +698,132 @@ fn slug_id(s: &str) -> Option<String> {
         crate::ids::EvidenceId::parse(&slug)
             .ok()
             .map(|e| e.to_string())
+    }
+}
+
+async fn archive_ticket(state: &AppState, id: &CaseId) -> Result<(), AppError> {
+    let bind = {
+        let b = state.bindings.read().await;
+        b.cases.get(id.as_str()).cloned()
+    };
+    let Some(bind) = bind else {
+        return Ok(());
+    };
+    let (users, roles) = ticket_people(state, id).await;
+    let overwrites = closed_overwrites(&state.config.guild_id, &roles, &users);
+    let new_name = closed_channel_name(&case_channel_name(id));
+    if let Err(e) = state
+        .discord
+        .modify_channel(
+            &bind.channel_id,
+            Some(&new_name),
+            state.config.closed_category_id.as_deref(),
+            Some(&overwrites),
+        )
+        .await
+    {
+        tracing::warn!("archive ticket channel: {e}");
+    }
+    match save_transcript(state, id).await {
+        Ok(url) => {
+            let note = serde_json::json!({ "content": format!("Transcript: {url}") });
+            if let Some(ch) = &state.config.transcript_channel_id {
+                let _ = state.discord.create_message(ch, &note).await;
+            }
+            let _ = state.discord.create_message(&bind.channel_id, &note).await;
+        }
+        Err(e) => tracing::warn!("transcript: {e}"),
+    }
+    Ok(())
+}
+
+async fn ticket_people(state: &AppState, id: &CaseId) -> (Vec<String>, Vec<String>) {
+    let g = state.gov.read().await;
+    let mut users = Vec::new();
+    if let Some(c) = g.cases.get(id) {
+        users.push(c.opened_by.to_string());
+        if let Some(s) = &c.subject {
+            users.push(s.to_string());
+        }
+    }
+    let roles: Vec<String> = state.config.roles.keys().cloned().collect();
+    (users, roles)
+}
+
+pub fn transcript_file(state: &AppState, id: &CaseId) -> PathBuf {
+    state
+        .bindings_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("transcripts")
+        .join(format!("{id}.html"))
+}
+
+pub async fn save_transcript(state: &AppState, id: &CaseId) -> Result<String, AppError> {
+    let bind = {
+        let b = state.bindings.read().await;
+        b.cases.get(id.as_str()).cloned()
+    }
+    .ok_or(AppError::NotFound)?;
+    let msgs = state
+        .discord
+        .list_messages(&bind.channel_id, 100)
+        .await
+        .map_err(|e| AppError::Discord(e.to_string()))?;
+    let html = transcript_html(id.as_str(), &msgs);
+    let path = transcript_file(state, id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| AppError::BadRequest(format!("transcript dir: {e}")))?;
+    }
+    std::fs::write(&path, html)
+        .map_err(|e| AppError::BadRequest(format!("transcript write: {e}")))?;
+    Ok(format!(
+        "{}/cases/{id}/transcript",
+        state.public_url.trim_end_matches('/')
+    ))
+}
+
+async fn ticket_member(state: &AppState, body: &Value, add: bool) -> Result<Value, AppError> {
+    let ch = body
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| AppError::BadRequest("missing channel".into()))?;
+    let user_id = body
+        .pointer("/data/options")
+        .and_then(|v| v.as_array())
+        .and_then(|opts| {
+            opts.iter().find_map(|o| {
+                if o.get("name").and_then(|v| v.as_str()) != Some("user") {
+                    return None;
+                }
+                o.get("value")
+                    .and_then(|v| v.as_str().map(str::to_string))
+                    .or_else(|| {
+                        o.get("value")
+                            .and_then(|v| v.as_u64())
+                            .map(|n| n.to_string())
+                    })
+            })
+        })
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::BadRequest("missing user".into()))?;
+    if add {
+        state
+            .discord
+            .edit_overwrite(ch, &user_id, 1, TALK, 0)
+            .await
+            .map_err(|e| AppError::Discord(e.to_string()))?;
+        Ok(ephemeral(&format!("Added <@{user_id}> to this ticket.")))
+    } else {
+        state
+            .discord
+            .edit_overwrite(ch, &user_id, 1, 0, VIEW_CHANNEL)
+            .await
+            .map_err(|e| AppError::Discord(e.to_string()))?;
+        Ok(ephemeral(&format!(
+            "Removed <@{user_id}> from this ticket."
+        )))
     }
 }
 

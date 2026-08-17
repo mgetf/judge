@@ -246,6 +246,7 @@ impl DiscordClient {
         name: &str,
         topic: Option<&str>,
         parent_id: Option<&str>,
+        overwrites: Option<&serde_json::Value>,
     ) -> Result<CreatedChannel, DiscordError> {
         let mut body = serde_json::json!({
             "name": name,
@@ -256,6 +257,9 @@ impl DiscordClient {
         }
         if let Some(parent) = parent_id {
             body["parent_id"] = serde_json::Value::String(parent.to_string());
+        }
+        if let Some(overwrites) = overwrites {
+            body["permission_overwrites"] = overwrites.clone();
         }
         let (status, text) = self
             .bot_send(
@@ -327,6 +331,82 @@ impl DiscordClient {
             return Err(DiscordError::Api(format!("pin {status}: {text}")));
         }
         Ok(())
+    }
+
+    pub async fn modify_channel(
+        &self,
+        channel_id: &str,
+        name: Option<&str>,
+        parent_id: Option<&str>,
+        overwrites: Option<&serde_json::Value>,
+    ) -> Result<CreatedChannel, DiscordError> {
+        let mut body = serde_json::json!({});
+        if let Some(name) = name {
+            body["name"] = serde_json::Value::String(name.to_string());
+        }
+        if let Some(parent) = parent_id {
+            body["parent_id"] = serde_json::Value::String(parent.to_string());
+        }
+        if let Some(overwrites) = overwrites {
+            body["permission_overwrites"] = overwrites.clone();
+        }
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::PATCH,
+                &format!("/channels/{channel_id}"),
+                Some(&body),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!(
+                "modify channel {status}: {text}"
+            )));
+        }
+        serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("channel json: {e}")))
+    }
+
+    pub async fn edit_overwrite(
+        &self,
+        channel_id: &str,
+        target_id: &str,
+        kind: u8,
+        allow: u64,
+        deny: u64,
+    ) -> Result<(), DiscordError> {
+        let body = serde_json::json!({
+            "type": kind,
+            "allow": allow.to_string(),
+            "deny": deny.to_string(),
+        });
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::PUT,
+                &format!("/channels/{channel_id}/permissions/{target_id}"),
+                Some(&body),
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!("overwrite {status}: {text}")));
+        }
+        Ok(())
+    }
+
+    pub async fn list_messages(
+        &self,
+        channel_id: &str,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Value>, DiscordError> {
+        let (status, text) = self
+            .bot_send(
+                reqwest::Method::GET,
+                &format!("/channels/{channel_id}/messages?limit={limit}"),
+                None,
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(DiscordError::Api(format!("messages {status}: {text}")));
+        }
+        serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("messages json: {e}")))
     }
 
     pub async fn overwrite_guild_commands(

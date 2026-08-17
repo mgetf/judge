@@ -153,6 +153,18 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .await
         .unwrap();
 
+    page.locator("[data-testid=close-request]")
+        .click(None)
+        .await
+        .unwrap();
+    expect(page.locator("[data-testid=close-submit]"))
+        .to_be_visible()
+        .await
+        .expect("confirm close");
+    expect(page.locator("[data-testid=close-cancel]"))
+        .to_be_visible()
+        .await
+        .expect("cancel close");
     page.locator("[data-testid=close-submit]")
         .click(None)
         .await
@@ -161,6 +173,10 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .to_be_visible()
         .await
         .expect("verdict snapshot");
+    expect(page.locator("[data-testid=channel-closed-case-cheat-1]"))
+        .to_be_visible()
+        .await
+        .expect("closed ticket rename");
     expect(page.locator("[data-testid=winner]"))
         .to_contain_text("cheat-ban")
         .await

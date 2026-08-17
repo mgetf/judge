@@ -138,7 +138,7 @@ pub fn see_docket(
     if who.is_none() || who.is_some_and(|p| p.is_voting_seat()) {
         buttons.push(Btn {
             custom_id: Wire::custom_id("ask", "case", None),
-            label: "Open case".into(),
+            label: "Create".into(),
             testid: "open-case".into(),
             style: 1,
             opens_modal: true,
@@ -148,7 +148,8 @@ pub fn see_docket(
         target: Target::Docket,
         title: "Docket".into(),
         title_testid: "docket-title".into(),
-        lede: "Court runs in Discord. This page is a live view.".into(),
+        lede: "Open a ticket. The bench will see it. Chat and attachments stay in the channel."
+            .into(),
         chips: Vec::new(),
         meta: Vec::new(),
         sections,
@@ -325,9 +326,9 @@ fn case_buttons(case: &Case, seated: bool, on_bench: bool, is_subject: bool) -> 
             opens_modal: true,
         });
         out.push(Btn {
-            custom_id: Wire::custom_id("go", "close", Some(cid)),
-            label: "Close case".into(),
-            testid: "close-submit".into(),
+            custom_id: Wire::custom_id("go", "closerequest", Some(cid)),
+            label: "Close".into(),
+            testid: "close-request".into(),
             style: 4,
             opens_modal: false,
         });
@@ -340,7 +341,7 @@ pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
     match verb {
         "case" | "open_case" => Ok(Modal {
             custom_id: do_id,
-            title: "Open a case".into(),
+            title: "Create a ticket".into(),
             testid: "open-case-modal".into(),
             fields: vec![
                 field("id", "Id", "case-id", false, true, ""),

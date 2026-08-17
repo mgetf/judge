@@ -16,9 +16,15 @@ pub struct CourtConfig {
     /// Existing #docket channel. Created on boot when omitted.
     #[serde(default)]
     pub docket_channel_id: Option<String>,
-    /// Category under which case channels are created.
+    /// Category for open tickets (Ticket Tool: Category Created/Opened).
     #[serde(default)]
     pub court_category_id: Option<String>,
+    /// Category tickets move to after close (Ticket Tool: Category Closed).
+    #[serde(default)]
+    pub closed_category_id: Option<String>,
+    /// Channel that receives HTML transcripts on close.
+    #[serde(default)]
+    pub transcript_channel_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

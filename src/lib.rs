@@ -34,6 +34,7 @@ pub mod scoring;
 pub mod session;
 pub mod state;
 pub mod testing;
+pub mod ticket;
 pub mod types;
 pub mod view;
 

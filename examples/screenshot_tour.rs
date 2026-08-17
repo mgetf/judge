@@ -147,6 +147,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     snap(&page, &dirs, "08-ballot").await?;
 
+    page.locator("[data-testid=close-request]")
+        .click(None)
+        .await?;
+    expect(page.locator("[data-testid=close-submit]"))
+        .to_be_visible()
+        .await?;
+    snap(&page, &dirs, "08b-close-ask").await?;
     page.locator("[data-testid=close-submit]")
         .click(None)
         .await?;

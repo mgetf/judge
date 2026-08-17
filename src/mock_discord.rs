@@ -83,6 +83,8 @@ struct Channel {
     name: String,
     #[allow(dead_code)]
     topic: String,
+    parent_id: Option<String>,
+    overwrites: Value,
 }
 
 #[derive(Clone)]
@@ -148,6 +150,16 @@ impl MockDiscord {
             .collect()
     }
 
+    pub fn channel_overwrites(&self, name: &str) -> Option<Value> {
+        self.inner
+            .lock()
+            .unwrap()
+            .channels
+            .iter()
+            .find(|c| c.name == name)
+            .map(|c| c.overwrites.clone())
+    }
+
     pub fn abort(&self) {
         self.handle.abort();
     }
@@ -185,13 +197,18 @@ pub async fn serve_mock_discord(cfg: MockDiscordConfig) -> std::io::Result<MockD
         )
         .route("/api/v10/guilds/{guild_id}/members", get(list_members))
         .route("/api/v10/guilds/{guild_id}/channels", post(create_channel))
+        .route("/api/v10/channels/{channel_id}", patch(modify_channel))
+        .route(
+            "/api/v10/channels/{channel_id}/permissions/{target_id}",
+            put(put_overwrite),
+        )
         .route(
             "/api/v10/applications/{app_id}/guilds/{guild_id}/commands",
             put(put_commands),
         )
         .route(
             "/api/v10/channels/{channel_id}/messages",
-            post(create_message),
+            get(list_channel_messages).post(create_message),
         )
         .route(
             "/api/v10/channels/{channel_id}/messages/{message_id}",
@@ -266,13 +283,116 @@ async fn create_channel(
             .into_response();
     }
     let id = next_id(&mut inner);
+    let parent_id = body
+        .get("parent_id")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let overwrites = body
+        .get("permission_overwrites")
+        .cloned()
+        .unwrap_or(Value::Array(vec![]));
     inner.channels.push(Channel {
         id: id.clone(),
         name: name.clone(),
         topic,
+        parent_id,
+        overwrites,
     });
     inner.messages.entry(id.clone()).or_default();
     Json(serde_json::json!({"id": id, "name": name, "type": 0})).into_response()
+}
+
+async fn modify_channel(
+    State(st): State<MockState>,
+    Path(channel_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    if !require_bot(&st, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"message":"401"})),
+        )
+            .into_response();
+    }
+    let mut inner = st.inner.lock().unwrap();
+    let Some(ch) = inner.channels.iter_mut().find(|c| c.id == channel_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"message":"Unknown Channel"})),
+        )
+            .into_response();
+    };
+    if let Some(name) = body.get("name").and_then(|v| v.as_str()) {
+        ch.name = name.to_string();
+    }
+    if let Some(parent) = body.get("parent_id").and_then(|v| v.as_str()) {
+        ch.parent_id = Some(parent.to_string());
+    }
+    if let Some(over) = body.get("permission_overwrites") {
+        ch.overwrites = over.clone();
+    }
+    Json(serde_json::json!({"id": ch.id, "name": ch.name, "type": 0})).into_response()
+}
+
+async fn put_overwrite(
+    State(st): State<MockState>,
+    Path((channel_id, target_id)): Path<(String, String)>,
+    headers: axum::http::HeaderMap,
+    Json(body): Json<Value>,
+) -> impl IntoResponse {
+    if !require_bot(&st, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"message":"401"})),
+        )
+            .into_response();
+    }
+    let mut inner = st.inner.lock().unwrap();
+    let Some(ch) = inner.channels.iter_mut().find(|c| c.id == channel_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"message":"Unknown Channel"})),
+        )
+            .into_response();
+    };
+    let mut row = body;
+    row["id"] = Value::String(target_id);
+    match ch.overwrites {
+        Value::Array(ref mut rows) => rows.push(row),
+        _ => ch.overwrites = Value::Array(vec![row]),
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+async fn list_channel_messages(
+    State(st): State<MockState>,
+    Path(channel_id): Path<String>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    if !require_bot(&st, &headers) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"message":"401"})),
+        )
+            .into_response();
+    }
+    let inner = st.inner.lock().unwrap();
+    let msgs = inner.messages.get(&channel_id).cloned().unwrap_or_default();
+    let rows: Vec<Value> = msgs
+        .iter()
+        .rev()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "channel_id": m.channel_id,
+                "content": m.content,
+                "author": { "id": "bot", "username": m.author },
+                "embeds": m.embeds,
+            })
+        })
+        .collect();
+    Json(rows).into_response()
 }
 
 async fn put_commands(
@@ -761,7 +881,13 @@ async fn apply_interaction(st: &MockState, payload: Value) {
                     .unwrap_or("");
                 if ty == 7 {
                     if let Some(list) = inner.messages.get_mut(ch) {
-                        if let Some(msg) = list.iter_mut().rev().find(|m| m.author == "bot") {
+                        let mid = payload.pointer("/message/id").and_then(|v| v.as_str());
+                        let msg = if let Some(mid) = mid {
+                            list.iter_mut().find(|m| m.id == mid)
+                        } else {
+                            list.iter_mut().rev().find(|m| m.author == "bot")
+                        };
+                        if let Some(msg) = msg {
                             if let Some(e) = data.get("embeds").and_then(|v| v.as_array()) {
                                 msg.embeds = e.clone();
                             }
@@ -982,7 +1108,9 @@ fn testid_for_custom_id(custom_id: &str, label: &str) -> String {
         Ok(crate::action::Wire::Go { verb, .. }) => match verb.as_str() {
             "notify" => "notify-submit".into(),
             "deliberate" => "deliberate-submit".into(),
+            "closerequest" => "close-request".into(),
             "close" => "close-submit".into(),
+            "cancelclose" => "close-cancel".into(),
             _ => verb,
         },
         _ => label.to_ascii_lowercase().replace(' ', "-"),

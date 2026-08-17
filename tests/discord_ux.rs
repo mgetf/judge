@@ -67,6 +67,20 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         names.iter().any(|n| n == "case-cheat-1"),
         "case channel created: {names:?}"
     );
+    let overwrites = stack
+        .mock
+        .channel_overwrites("case-cheat-1")
+        .expect("ticket overwrites");
+    let rows = overwrites.as_array().expect("overwrite list");
+    assert!(
+        rows.iter().any(|r| r["id"] == "000000000000000000"
+            && r["deny"] == judge::ticket::VIEW_CHANNEL.to_string()),
+        "ticket hides @everyone: {overwrites}"
+    );
+    assert!(
+        rows.iter().any(|r| r["id"] == "100" && r["type"] == 1),
+        "opener can see the ticket: {overwrites}"
+    );
 
     let case_page = client
         .get(format!("{}/cases/case-cheat-1", stack.judge_url))
@@ -192,6 +206,67 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         .status()
         .is_success());
 
+    let add = json!({
+        "type": 2,
+        "channel_id": case_ch,
+        "guild_id": "000000000000000000",
+        "member": {
+            "roles": ["111111111111111111"],
+            "user": { "id": "100", "username": "tommyy", "global_name": "tommyy" }
+        },
+        "data": {
+            "name": "add",
+            "options": [{ "name": "user", "type": 6, "value": "200" }]
+        }
+    });
+    let added = client
+        .post(format!("{}/discord/interactions", stack.judge_url))
+        .json(&add)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        added.status().is_success(),
+        "{}",
+        added.text().await.unwrap()
+    );
+    let after_add = stack
+        .mock
+        .channel_overwrites("case-cheat-1")
+        .expect("overwrites after add");
+    assert!(
+        after_add
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == "200"),
+        "added user 200: {after_add}"
+    );
+
+    let ask = json!({
+        "type": 3,
+        "channel_id": case_ch,
+        "guild_id": "000000000000000000",
+        "member": {
+            "roles": ["111111111111111111"],
+            "user": { "id": "100", "username": "tommyy", "global_name": "tommyy" }
+        },
+        "data": { "custom_id": "go:closerequest:case-cheat-1", "component_type": 2 }
+    });
+    let asked = client
+        .post(format!("{}/discord/interactions", stack.judge_url))
+        .json(&ask)
+        .send()
+        .await
+        .unwrap();
+    let asked_body = asked.text().await.unwrap();
+    assert!(
+        asked_body.contains("Are you sure you want to close this ticket"),
+        "{asked_body}"
+    );
+    assert!(asked_body.contains("Confirm Close"), "{asked_body}");
+    assert!(asked_body.contains("Cancel Close"), "{asked_body}");
+
     let close = json!({
         "type": 3,
         "channel_id": case_ch,
@@ -231,6 +306,25 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
     assert!(
         case_page.contains("https://mge.tf/demos/abc"),
         "{case_page}"
+    );
+    assert!(
+        case_page.contains("/cases/case-cheat-1/transcript"),
+        "{case_page}"
+    );
+
+    let transcript = client
+        .get(format!("{}/cases/case-cheat-1/transcript", stack.judge_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(transcript.status(), 200);
+    let html = transcript.text().await.unwrap();
+    assert!(html.contains("Transcript case-cheat-1"), "{html}");
+
+    let names = stack.mock.channel_names();
+    assert!(
+        names.iter().any(|n| n == "closed-case-cheat-1"),
+        "closed ticket should be renamed: {names:?}"
     );
 
     stack.abort();

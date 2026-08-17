@@ -313,6 +313,11 @@ fn view_body(view: &View) -> Markup {
                     a href=(url) data-testid="discord-channel" { "Open Discord channel" }
                 }
             }
+            @if let Target::Cite(crate::links::Cite::Case { id }) = &view.target {
+                p.meta {
+                    a href=(format!("/cases/{id}/transcript")) data-testid="transcript" { "Transcript" }
+                }
+            }
             @for sec in &view.sections {
                 h2 { (sec.heading) }
                 ul.record data-testid=(sec.testid) {
@@ -348,7 +353,7 @@ fn action_bar(buttons: &[Btn], target: &Target) -> Markup {
                     )) { (b.label) }
                 } @else {
                     form method="post" action="/eval" style="display:inline" {
-                        input type="hidden" name="action" value=(verb_of(&b.custom_id));
+                        input type="hidden" name="action" value=(html_eval_verb(&b.custom_id));
                         @if let Some(c) = &case {
                             input type="hidden" name="case" value=(c);
                         }
@@ -364,6 +369,15 @@ fn action_bar(buttons: &[Btn], target: &Target) -> Markup {
                 }
             }
         }
+    }
+}
+
+fn html_eval_verb(custom_id: &str) -> String {
+    let v = verb_of(custom_id);
+    if v == "closerequest" {
+        "close".into()
+    } else {
+        v
     }
 }
 
