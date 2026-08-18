@@ -51,6 +51,8 @@ async fn mock_discord_oauth_and_roster() {
         api_base: stack.mock.api_base(),
         authorize_url: stack.mock.authorize_url(),
         bot_token: Some("mock-bot".into()),
+        public_key: None,
+        application_id: "test-client".into(),
     });
     let token = discord.exchange_code("code-100").await.unwrap();
     let me = discord.me(&token).await.unwrap();

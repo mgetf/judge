@@ -1,4 +1,4 @@
-//! Same cheat-record flow as `tests/playwright.rs`, screenshot after every page.
+//! Discord-first court tour. Screenshots the guild UX after each act.
 //!
 //!   cargo run --example screenshot_tour
 //!
@@ -59,56 +59,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .await?;
 
-    page.goto(&stack.judge_url, None).await?;
-    snap(&page, &dirs, "01-docket-logged-out").await?;
-
-    page.locator("[data-testid=login]").click(None).await?;
-    expect(page.locator("[data-testid=mock-discord]"))
-        .to_be_visible()
-        .await?;
-    snap(&page, &dirs, "02-mock-discord-authorize").await?;
+    page.goto(&stack.mock.base_url, None).await?;
+    snap(&page, &dirs, "01-pick-member").await?;
 
     page.locator("[data-testid=continue-tommyy]")
         .click(None)
         .await?;
-    expect(page.locator("[data-testid=whoami]"))
-        .to_have_text("tommyy")
+    expect(page.locator("[data-testid=guild]"))
+        .to_be_visible()
         .await?;
-    snap(&page, &dirs, "03-docket-logged-in").await?;
+    snap(&page, &dirs, "02-docket-channel").await?;
 
-    page.locator("[data-testid=case-id]")
+    page.locator("[data-testid=open-case]").click(None).await?;
+    expect(page.locator("[data-testid=modal]"))
+        .to_be_visible()
+        .await?;
+    page.locator("[data-testid=modal] [data-testid=case-id]")
         .fill("case-cheat-1", None)
         .await?;
-    page.locator("[data-testid=case-brief]")
+    page.locator("[data-testid=modal] [data-testid=case-brief]")
         .fill("STV aimbot on mge_training", None)
         .await?;
-    page.locator("[data-testid=case-subject]")
+    page.locator("[data-testid=modal] [data-testid=case-subject]")
         .fill("76561198000000000", None)
         .await?;
-    snap(&page, &dirs, "04-open-case-form-filled").await?;
+    snap(&page, &dirs, "03-open-case-modal").await?;
 
     page.locator("[data-testid=open-case-submit]")
         .click(None)
         .await?;
-    expect(page.locator("[data-testid=case-title]"))
-        .to_have_text("case-cheat-1")
+    expect(page.locator("[data-testid=channel-case-cheat-1]"))
+        .to_be_visible()
         .await?;
-    snap(&page, &dirs, "05-case-intake").await?;
-
-    page.locator("[data-testid=evidence-id]")
-        .fill("demo-stv", None)
-        .await?;
-    page.locator("[data-testid=evidence-label]")
-        .fill("STV demo", None)
-        .await?;
-    page.locator("[data-testid=evidence-body]")
-        .fill("https://mge.tf/demos/abc snap at 3:12", None)
-        .await?;
-    page.locator("[data-testid=evidence-submit]")
+    page.locator("[data-testid=channel-case-cheat-1]")
         .click(None)
         .await?;
-    snap(&page, &dirs, "06-evidence-filed").await?;
+    snap(&page, &dirs, "04-case-channel-intake").await?;
 
+    page.locator("[data-testid=attach-submit]")
+        .click(None)
+        .await?;
+    snap(&page, &dirs, "05-attachment-evidence").await?;
+
+    page.locator("[data-testid=propose-outcome]")
+        .click(None)
+        .await?;
     page.locator("[data-testid=outcome-id]")
         .fill("cheat-ban", None)
         .await?;
@@ -116,6 +111,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .fill("Permanent cheat ban", None)
         .await?;
     page.locator("[data-testid=outcome-submit]")
+        .click(None)
+        .await?;
+    page.locator("[data-testid=propose-outcome]")
         .click(None)
         .await?;
     page.locator("[data-testid=outcome-id]")
@@ -127,49 +125,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     page.locator("[data-testid=outcome-submit]")
         .click(None)
         .await?;
-    snap(&page, &dirs, "07-outcomes-proposed").await?;
+    snap(&page, &dirs, "06-outcomes").await?;
 
     page.locator("[data-testid=deliberate-submit]")
         .click(None)
         .await?;
     expect(page.locator("[data-testid=case-phase]"))
-        .to_have_text("deliberation")
+        .to_contain_text("deliberation")
         .await?;
-    snap(&page, &dirs, "08-deliberation").await?;
+    snap(&page, &dirs, "07-deliberation").await?;
 
+    page.locator("[data-testid=cast-vote]").click(None).await?;
     page.locator("[data-testid=vote-outcome]")
-        .select_option("cheat-ban", None)
+        .fill("cheat-ban", None)
         .await?;
     page.locator("[data-testid=vote-reason]")
         .fill("Demo is unambiguous.", None)
         .await?;
-    snap(&page, &dirs, "09-ballot-filled").await?;
-
     page.locator("[data-testid=vote-submit]")
         .click(None)
         .await?;
-    snap(&page, &dirs, "10-ballot-cast").await?;
+    snap(&page, &dirs, "08-ballot").await?;
 
+    page.locator("[data-testid=close-request]")
+        .click(None)
+        .await?;
+    expect(page.locator("[data-testid=close-submit]"))
+        .to_be_visible()
+        .await?;
+    snap(&page, &dirs, "08b-close-ask").await?;
     page.locator("[data-testid=close-submit]")
         .click(None)
         .await?;
     expect(page.locator("[data-testid=verdict]"))
         .to_be_visible()
         .await?;
-    snap(&page, &dirs, "11-verdict").await?;
+    snap(&page, &dirs, "09-verdict-in-channel").await?;
 
-    page.goto(&format!("{}/log", stack.judge_url), None).await?;
-    snap(&page, &dirs, "12-event-log").await?;
-
-    page.goto(&format!("{}/people/100", stack.judge_url), None)
+    page.goto(&format!("{}/cases/case-cheat-1", stack.judge_url), None)
         .await?;
-    snap(&page, &dirs, "13-person-tommyy").await?;
-
-    page.goto(&stack.judge_url, None).await?;
-    snap(&page, &dirs, "14-docket-with-closed-case").await?;
+    snap(&page, &dirs, "10-html-live-view").await?;
 
     let _ = browser.close().await;
     stack.abort();
-    eprintln!("done. {} shots in {:?}", 14, dirs);
+    eprintln!("done. shots in {:?}", dirs);
     Ok(())
 }

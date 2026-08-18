@@ -5,12 +5,14 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
+use crate::bot::{self, DiscordBindings};
 use crate::clock::now_ms;
 use crate::config::CourtConfig;
 use crate::discord::{roster_from_members, DiscordClient, DiscordEnv};
 use crate::event_log::EventLog;
 use crate::events::Event;
 use crate::http::router;
+use crate::live::Live;
 use crate::reducer::GovState;
 use crate::types::Reject;
 
@@ -22,6 +24,9 @@ pub struct AppState {
     pub discord: Arc<DiscordClient>,
     pub session_secret: String,
     pub public_url: String,
+    pub live: Live,
+    pub bindings: Arc<RwLock<DiscordBindings>>,
+    pub bindings_path: PathBuf,
 }
 
 impl AppState {
@@ -92,6 +97,8 @@ pub async fn boot_state(opts: &JudgeOptions) -> Result<AppState, Box<dyn std::er
             .map_err(|e| format!("replay: {e}"))?;
     }
     let discord = DiscordClient::new(opts.discord.clone());
+    let bindings_path = opts.data_dir.join("discord.json");
+    let bindings = DiscordBindings::load(&bindings_path);
     let state = AppState {
         gov: Arc::new(RwLock::new(gov)),
         log: Arc::new(log),
@@ -99,9 +106,15 @@ pub async fn boot_state(opts: &JudgeOptions) -> Result<AppState, Box<dyn std::er
         discord: Arc::new(discord),
         session_secret: opts.session_secret.clone(),
         public_url: opts.public_url.clone(),
+        live: Live::new(),
+        bindings: Arc::new(RwLock::new(bindings)),
+        bindings_path,
     };
     if let Err(e) = sync_roster(&state).await {
         tracing::warn!("roster sync skipped: {e}");
+    }
+    if let Err(e) = bot::ensure_ux(&state).await {
+        tracing::warn!("discord ux skipped: {e}");
     }
     Ok(state)
 }
@@ -130,6 +143,18 @@ pub async fn commit(state: &AppState, ev: Event) -> Result<(), AppError> {
         g.submit(ev.clone())?;
     }
     state.log.append(&ev).await?;
+    let seq = state
+        .gov
+        .read()
+        .await
+        .attempts
+        .last()
+        .map(|a| a.seq)
+        .unwrap_or(0);
+    state.live.publish(seq);
+    if let Err(e) = bot::after_commit(state, &ev).await {
+        tracing::warn!("discord live view: {e}");
+    }
     Ok(())
 }
 

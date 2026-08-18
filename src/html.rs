@@ -1,21 +1,11 @@
-//! Court pages. Maud builds the markup; CSS is a paper docket, not a product.
-
-use std::collections::HashMap;
+//! Court pages are a live `see` plus buttons. Chat and attachments live in Discord.
 
 use maud::{html, Markup, PreEscaped, DOCTYPE};
 
-use crate::ids::PrincipalId;
-use crate::links::{path, Cite};
-use crate::state::{Case, Policy, Principal, Verdict};
-use crate::types::{Hearing, Phase, Seat};
-
-fn name_of(people: &HashMap<PrincipalId, Principal>, id: &PrincipalId) -> String {
-    people
-        .get(id)
-        .map(|p| p.display_name.clone())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| id.to_string())
-}
+use crate::action::Wire;
+use crate::state::{Policy, Principal, Verdict};
+use crate::types::Seat;
+use crate::view::{modal_for, Btn, Modal, Target, View};
 
 fn fmt_margin(m: f64) -> String {
     if !m.is_finite() {
@@ -116,27 +106,18 @@ h3 { font-size: 1rem; margin: 0 0 0.7rem; }
   background: var(--sheet);
   border: 1px solid var(--rule);
 }
-.bench .wt { color: var(--muted); font-variant: small-caps; }
-table { width: 100%; border-collapse: collapse; margin: 0.4rem 0 1.4rem; }
-th {
-  text-align: left;
-  font-size: 0.78rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-  border-bottom: 1px solid var(--ink);
-  padding: 0.35rem 0.4rem;
-}
-td { padding: 0.55rem 0.4rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
-tr:hover td { background: rgba(255,255,255,0.45); }
+.actions { display: flex; flex-wrap: wrap; gap: 0.45rem; margin: 1.1rem 0; }
+.record { list-style: none; padding: 0; margin: 0 0 0.6rem; }
+.record li { padding: 0.45rem 0; border-bottom: 1px dotted var(--rule); }
 .empty { color: var(--muted); font-style: italic; }
-form.panel, .panel {
+form.panel, .panel, dialog.panel {
   margin: 1.1rem 0;
   padding: 1rem 1.05rem 1.1rem;
   background: var(--sheet);
   border: 1px solid var(--rule);
   box-shadow: 2px 2px 0 rgba(28,24,20,0.04);
 }
+dialog.panel { max-width: 28rem; }
 .field { display: block; margin: 0.55rem 0; }
 .field span { display: block; font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }
 input, select, textarea {
@@ -170,9 +151,6 @@ button.quiet { background: transparent; color: var(--ink); }
 }
 .verdict h2 { border: 0; margin-top: 0; color: var(--ok); }
 .verdict .winner { font-size: 1.35rem; margin: 0.2rem 0 0.5rem; }
-.record { list-style: none; padding: 0; margin: 0 0 0.6rem; }
-.record li { padding: 0.45rem 0; border-bottom: 1px dotted var(--rule); }
-.record .by { color: var(--muted); }
 .log { font-size: 0.82rem; }
 .log code {
   display: block;
@@ -186,6 +164,38 @@ button.quiet { background: transparent; color: var(--ink); }
 .fold-accepted { color: var(--ok); }
 .fold-rejected { color: var(--stamp); }
 .person-id { font-family: ui-monospace, monospace; color: var(--muted); }
+table { width: 100%; border-collapse: collapse; margin: 0.4rem 0 1.4rem; }
+th {
+  text-align: left;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--ink);
+  padding: 0.35rem 0.4rem;
+}
+td { padding: 0.55rem 0.4rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+"#;
+
+const LIVE_JS: &str = r#"
+(function(){
+  var box = document.querySelector('[data-live-root]');
+  if (!box) return;
+  var cite = box.getAttribute('data-cite') || 'docket';
+  var es = new EventSource('/live');
+  es.addEventListener('commit', function(){
+    fetch('/see?cite=' + encodeURIComponent(cite), { headers: { 'Accept': 'text/html' }})
+      .then(function(r){ return r.text(); })
+      .then(function(html){
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var next = doc.querySelector('[data-live-root]');
+        if (next && box.parentNode) {
+          box.replaceWith(next);
+          box = document.querySelector('[data-live-root]');
+        }
+      }).catch(function(){});
+  });
+})();
 "#;
 
 fn layout(title: &str, who: Option<&Principal>, body: Markup) -> Markup {
@@ -204,6 +214,7 @@ fn layout(title: &str, who: Option<&Principal>, body: Markup) -> Markup {
                     (mast_who(who))
                 }
                 (body)
+                script { (PreEscaped(LIVE_JS)) }
             }
         }
     }
@@ -261,285 +272,168 @@ pub fn flash_page(who: Option<&Principal>, msg: &str) -> Markup {
     )
 }
 
-pub fn docket(
-    who: Option<&Principal>,
-    cases: &[&Case],
-    bench: &[Principal],
-    notice: Option<&str>,
-) -> Markup {
-    layout(
-        "Docket",
-        who,
-        html! {
-            (flash(notice))
-            h1 { "Docket" }
-            p.meta {
-                a href="/log" { "event log" }
-            }
-            h2 { "Bench" }
-            ul.bench data-testid="bench" {
-                @for p in bench {
-                    li {
-                        a href=(path(&Cite::Principal { id: p.id.clone() })) { (p.display_name) }
-                        span.wt {
-                            (p.seat.as_ref().map(Seat::label).unwrap_or("—"))
-                            " · "
-                            (p.weight)
-                        }
-                    }
-                }
-            }
-            h2 { "Cases" }
-            table data-testid="docket" {
-                thead {
-                    tr {
-                        th { "Case" }
-                        th { "Kind" }
-                        th { "Phase" }
-                        th { "Brief" }
-                    }
-                }
-                tbody {
-                    @if cases.is_empty() {
-                        tr {
-                            td colspan="4" class="empty" data-testid="empty-docket" { "No cases yet." }
-                        }
-                    } @else {
-                        @for c in cases {
-                            tr data-testid=(format!("case-row-{}", c.id)) {
-                                td {
-                                    a href=(path(&Cite::Case { id: c.id.clone() })) data-testid=(format!("case-link-{}", c.id)) {
-                                        (c.id)
-                                    }
-                                }
-                                td { (c.kind.as_str()) }
-                                td data-testid=(format!("phase-{}", c.id)) {
-                                    span class={"chip phase-" (c.phase.as_str())} { (c.phase.as_str()) }
-                                }
-                                td { (c.brief) }
-                            }
-                        }
-                    }
-                }
-            }
-            @if who.is_some_and(|p| p.is_voting_seat()) {
-                (open_case_form())
-            }
+fn cite_param(target: &Target) -> String {
+    match target {
+        Target::Docket => "docket".into(),
+        Target::Cite(c) => match c {
+            crate::links::Cite::Case { id } => format!("case:{id}"),
+            crate::links::Cite::Principal { id } => format!("person:{id}"),
+            crate::links::Cite::Policy { id } => format!("policy:{id}"),
+            crate::links::Cite::Log { seq } => format!("log:{seq}"),
+            crate::links::Cite::Evidence { case, id: _ } => format!("case:{case}"),
+            crate::links::Cite::Note { case, .. } => format!("case:{case}"),
         },
-    )
+    }
 }
 
-fn open_case_form() -> Markup {
+pub fn render_view(who: Option<&Principal>, view: &View) -> Markup {
+    layout(&view.title, who, view_body(view))
+}
+
+fn view_body(view: &View) -> Markup {
     html! {
-        form.panel method="post" action="/cases" data-testid="open-case" {
-            h3 { "Open a case" }
-            label.field {
-                span { "Id" }
-                input name="id" data-testid="case-id" required;
-            }
-            label.field {
-                span { "Kind" }
-                select name="kind" data-testid="case-kind" {
-                    option value="record" selected { "record" }
-                    option value="routine" { "routine" }
-                    option value="personnel" { "personnel" }
-                    option value="policy" { "policy" }
-                    option value="constitutional" { "constitutional" }
-                    option value="appeal" { "appeal" }
+        div data-live-root data-cite=(cite_param(&view.target)) data-testid="live-root" {
+            (flash(view.notice.as_deref()))
+            h1 data-testid=(view.title_testid) { (view.title) }
+            p.lede data-testid=@if matches!(view.target, Target::Cite(crate::links::Cite::Case { .. })) { "case-brief" } @else { "lede" } { (view.lede) }
+            @if !view.chips.is_empty() {
+                div.chips data-testid="case-meta" {
+                    @for c in &view.chips {
+                        span class={"chip " (c.class)} data-testid=@if c.class.starts_with("phase-") { "case-phase" } @else { "chip" } {
+                            (c.label)
+                        }
+                    }
                 }
             }
-            label.field {
-                span { "Hearing" }
-                select name="hearing" data-testid="case-hearing" {
-                    option value="none" selected { "none (record only)" }
-                    option value="required" { "required" }
+            @for m in &view.meta {
+                p.meta { (m) }
+            }
+            @if let Some(url) = &view.channel_url {
+                p.meta {
+                    a href=(url) data-testid="discord-channel" { "Open Discord channel" }
                 }
             }
-            label.field {
-                span { "Subject" }
-                input name="subject" data-testid="case-subject" placeholder="discord or steam id";
+            @if let Target::Cite(crate::links::Cite::Case { id }) = &view.target {
+                p.meta {
+                    a href=(format!("/cases/{id}/transcript")) data-testid="transcript" { "Transcript" }
+                }
             }
-            label.field {
-                span { "Appeal target" }
-                input name="target_case" data-testid="case-target";
+            @for sec in &view.sections {
+                h2 { (sec.heading) }
+                ul.record data-testid=(sec.testid) {
+                    @if sec.items.is_empty() {
+                        li.empty { (sec.empty) }
+                    } @else {
+                        @for item in &sec.items {
+                            li id=(format!("{}-{}", sec.testid, item.id)) data-testid=(item.testid) { (item.text) }
+                        }
+                    }
+                }
             }
-            label.field {
-                span { "Brief" }
-                textarea name="brief" data-testid="case-brief" required {}
+            @if let Some(v) = &view.verdict {
+                (render_verdict(v))
             }
-            button type="submit" data-testid="open-case-submit" { "Open" }
+            (action_bar(&view.buttons, &view.target))
         }
     }
 }
 
-pub fn case_page(
-    who: Option<&Principal>,
-    case: &Case,
-    notice: Option<&str>,
-    people: &HashMap<PrincipalId, Principal>,
-) -> Markup {
-    let seated = who.is_some_and(|p| p.is_voting_seat());
-    let on_bench = who.is_some_and(|p| case.bench.as_ref().and_then(|b| b.seat(&p.id)).is_some());
-    let is_subject = who.is_some_and(|p| case.subject.as_ref() == Some(&p.id));
-    let title = format!("Case {}", case.id);
-
-    layout(
-        &title,
-        who,
-        html! {
-            (flash(notice))
-            h1 data-testid="case-title" { (case.id) }
-            p.lede data-testid="case-brief" { (case.brief) }
-            div.chips data-testid="case-meta" {
-                span.chip { (case.kind) }
-                span.chip { "hearing " (case.hearing) }
-                span class={"chip phase-" (case.phase.as_str())} data-testid="case-phase" {
-                    (case.phase)
-                }
-            }
-            p.meta {
-                "Subject: "
-                @if let Some(id) = &case.subject {
-                    a href=(path(&Cite::Principal { id: id.clone() })) data-testid="subject" {
-                        (name_of(people, id))
-                    }
+fn action_bar(buttons: &[Btn], target: &Target) -> Markup {
+    let case = match target {
+        Target::Cite(crate::links::Cite::Case { id }) => Some(id.as_str().to_string()),
+        _ => None,
+    };
+    html! {
+        div.actions data-testid="actions" {
+            @for b in buttons {
+                @if b.opens_modal {
+                    button.quiet type="button" data-testid=(b.testid) onclick=(format!(
+                        "document.getElementById('modal-{}').showModal()",
+                        b.testid
+                    )) { (b.label) }
                 } @else {
-                    "—"
-                }
-            }
-            h2 { "Evidence" }
-            ul.record data-testid="evidence-list" {
-                @if case.evidence.is_empty() {
-                    li.empty { "None filed." }
-                } @else {
-                    @for e in case.evidence.values() {
-                        li id=(format!("evidence-{}", e.id)) data-testid=(format!("evidence-{}", e.id)) {
-                            a href=(path(&Cite::Evidence {
-                                case: case.id.clone(),
-                                id: e.id.clone(),
-                            })) { (e.id) }
-                            " — " (e.label) " — " (e.body) " "
-                            span.by { "by " (name_of(people, &e.filed_by)) }
+                    form method="post" action="/eval" style="display:inline" {
+                        input type="hidden" name="action" value=(html_eval_verb(&b.custom_id));
+                        @if let Some(c) = &case {
+                            input type="hidden" name="case" value=(c);
                         }
+                        button type="submit" data-testid=(b.testid) { (b.label) }
                     }
                 }
             }
-            h2 { "Outcomes" }
-            ul.record data-testid="outcome-list" {
-                @if case.outcomes.is_empty() {
-                    li.empty { "None proposed." }
-                } @else {
-                    @for o in case.outcomes.values() {
-                        li data-testid=(format!("outcome-{}", o.id)) {
-                            strong { (o.id) }
-                            " — " (o.body)
-                        }
-                    }
+        }
+        @for b in buttons {
+            @if b.opens_modal {
+                @if let Ok(modal) = modal_from_btn(b, case.as_deref()) {
+                    (render_dialog(&modal, case.as_deref()))
                 }
             }
-            h2 { "Ballots" }
-            ul.record data-testid="ballot-list" {
-                @if case.ballots.is_empty() {
-                    li.empty { "No ballots yet." }
-                } @else {
-                    @for b in case.ballots.values() {
-                        li data-testid=(format!("ballot-{}", b.voter)) {
-                            strong { (name_of(people, &b.voter)) }
-                            " → " (b.outcome) " "
-                            span.by { "weight " (b.weight) }
-                            " — " (b.reason)
-                        }
-                    }
-                }
-            }
-            @if let Some(v) = &case.verdict {
-                (render_verdict(v))
-            }
-            (case_actions(case, seated, on_bench, is_subject))
-        },
-    )
+        }
+    }
 }
 
-fn case_actions(case: &Case, seated: bool, on_bench: bool, is_subject: bool) -> Markup {
-    let live = matches!(
-        case.phase,
-        Phase::Intake | Phase::Noticed | Phase::Deliberation
-    );
-    let proposing = matches!(case.phase, Phase::Intake | Phase::Noticed);
+fn html_eval_verb(custom_id: &str) -> String {
+    let v = verb_of(custom_id);
+    if v == "closerequest" {
+        "close".into()
+    } else {
+        v
+    }
+}
+
+fn verb_of(custom_id: &str) -> String {
+    Wire::parse(custom_id)
+        .map(|w| match w {
+            Wire::Go { verb, .. } | Wire::Ask { verb, .. } | Wire::Do { verb, .. } => verb,
+        })
+        .unwrap_or_default()
+}
+
+fn modal_from_btn(b: &Btn, case: Option<&str>) -> Result<Modal, String> {
+    let w = Wire::parse(&b.custom_id)?;
+    match w {
+        Wire::Ask { verb, case: c } => modal_for(&verb, c.as_deref().or(case)),
+        _ => Err("not a modal".into()),
+    }
+}
+
+fn render_dialog(modal: &Modal, case: Option<&str>) -> Markup {
+    let verb = verb_of(&modal.custom_id);
+    let dialog_id = match verb.as_str() {
+        "case" | "open_case" => "modal-open-case",
+        "evidence" | "file_evidence" => "modal-file-evidence",
+        "outcome" | "propose_outcome" => "modal-propose-outcome",
+        "vote" => "modal-cast-vote",
+        "respond" => "modal-respond",
+        other => other,
+    };
     html! {
-        @if seated && live {
-            form.panel method="post" action=(format!("/cases/{}/evidence", case.id)) data-testid="file-evidence" {
-                h3 { "File evidence" }
-                label.field {
-                    span { "Id" }
-                    input name="id" data-testid="evidence-id" required;
+        dialog.panel id=(dialog_id) data-testid=(modal.testid) {
+            form method="post" action="/eval" {
+                h3 { (modal.title) }
+                input type="hidden" name="action" value=(verb);
+                @if let Some(c) = case {
+                    input type="hidden" name="case" value=(c);
                 }
-                label.field {
-                    span { "Label" }
-                    input name="label" data-testid="evidence-label" required;
-                }
-                label.field {
-                    span { "Body" }
-                    textarea name="body" data-testid="evidence-body" required {}
-                }
-                button type="submit" data-testid="evidence-submit" { "File" }
-            }
-        }
-        @if seated && proposing {
-            form.panel method="post" action=(format!("/cases/{}/outcomes", case.id)) data-testid="propose-outcome" {
-                h3 { "Propose outcome" }
-                label.field {
-                    span { "Id" }
-                    input name="id" data-testid="outcome-id" required;
-                }
-                label.field {
-                    span { "Body" }
-                    textarea name="body" data-testid="outcome-body" required {}
-                }
-                label.field {
-                    span { "Enacts policy" }
-                    input name="enacts_policy" data-testid="outcome-policy";
-                }
-                button type="submit" data-testid="outcome-submit" { "Propose" }
-            }
-            @if case.hearing == Hearing::Required && case.phase == Phase::Intake {
-                form.panel method="post" action=(format!("/cases/{}/notify", case.id)) data-testid="notify-subject" {
-                    button type="submit" data-testid="notify-submit" { "Notify subject" }
-                }
-            }
-            form.panel method="post" action=(format!("/cases/{}/deliberate", case.id)) data-testid="open-deliberation" {
-                button type="submit" data-testid="deliberate-submit" { "Open deliberation" }
-            }
-        }
-        @if is_subject && case.hearing == Hearing::Required && case.phase == Phase::Noticed {
-            form.panel method="post" action=(format!("/cases/{}/respond", case.id)) data-testid="respond" {
-                h3 { "Response" }
-                label.field {
-                    span { "Body" }
-                    textarea name="body" data-testid="response-body" required {}
-                }
-                button type="submit" data-testid="response-submit" { "File response" }
-            }
-        }
-        @if (on_bench || seated) && case.phase == Phase::Deliberation {
-            form.panel method="post" action=(format!("/cases/{}/vote", case.id)) data-testid="cast-vote" {
-                h3 { "Vote" }
-                label.field {
-                    span { "Outcome" }
-                    select name="outcome" data-testid="vote-outcome" {
-                        @for o in case.outcomes.keys() {
-                            option value=(o) { (o) }
+                @for f in &modal.fields {
+                    label.field {
+                        span { (f.label) }
+                        @if f.paragraph {
+                            textarea name=(f.custom_id) data-testid=(f.testid) required[f.required] placeholder=(f.placeholder) {}
+                        } @else {
+                            input name=(f.custom_id) data-testid=(f.testid) required[f.required] placeholder=(f.placeholder);
                         }
                     }
                 }
-                label.field {
-                    span { "Reason" }
-                    textarea name="reason" data-testid="vote-reason" required {}
-                }
-                button type="submit" data-testid="vote-submit" { "Cast ballot" }
-            }
-            form.panel method="post" action=(format!("/cases/{}/close", case.id)) data-testid="close-case" {
-                button type="submit" data-testid="close-submit" { "Close case" }
+                button type="submit" data-testid=(format!("{}-submit", match verb.as_str() {
+                    "case" | "open_case" => "open-case",
+                    "evidence" | "file_evidence" => "evidence",
+                    "outcome" | "propose_outcome" => "outcome",
+                    "vote" => "vote",
+                    "respond" => "response",
+                    v => v,
+                })) { "Submit" }
+                button.quiet type="button" onclick="this.closest('dialog').close()" { "Cancel" }
             }
         }
     }
@@ -602,7 +496,7 @@ pub fn policy_page(who: Option<&Principal>, policy: &Policy) -> Markup {
                 } @else {
                     @for v in &policy.versions {
                         li {
-                            a href=(path(&Cite::Case { id: v.enacted_by_case.clone() })) {
+                            a href=(crate::links::path(&crate::links::Cite::Case { id: v.enacted_by_case.clone() })) {
                                 (v.enacted_by_case)
                             }
                             " — " (v.body)
@@ -646,6 +540,8 @@ pub fn log_page(who: Option<&Principal>, lines: &[(u64, String, String)]) -> Mar
         },
     )
 }
+
+pub use crate::bot::see_path;
 
 #[cfg(test)]
 mod tests {
