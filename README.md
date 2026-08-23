@@ -35,6 +35,9 @@ browsing the docket, cases, people, policies, and the raw event log.
 - **Everything has a stable link path** (`/cases/{id}`, `/people/{id}`,
   `/policies/{id}`, `/log`), so verdicts and policies are citable.
 
+The full operational semantics — the reducer written out as abstract-machine
+reduction rules — is in [SEMANTICS.md](SEMANTICS.md).
+
 ## Decision kinds and rules
 
 Each case has a `DecisionKind` that sets its quorum and margin
