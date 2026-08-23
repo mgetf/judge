@@ -1,19 +1,33 @@
-# The court, as an abstract machine
+# The court, as a fold
 
-The judge is a CESK-shaped machine. The **C**ontrol string is the event at the
-head of the log. The **E**nvironment is the franchise ρ — who is bound to which
-seat at what weight. The **S**tore is the docket σ — cases and policies. The
-**K**ontinuation is the unconsumed suffix of the log. There is one extension:
-a write-only output register J, the attempt journal. Strictly it is a CESK+J
-machine, because this court records its failures.
+The judge is a fold. There is a state, a total step function, and a log; boot
+is the fold of the step over the log, and the journal is its trace:
 
-The machine is **total**: no event gets stuck. An act the constitution refuses
-does not halt the machine; it reduces to the same ρ and σ with the refusal
-journaled. Failure is an answer, not an absence of one.
+```
+step : (ρ, σ) × ev → (ρ′, σ′) × d          d ::= ✓ | ✗r          (total)
+
+boot(K) = foldl step (∅, ⟨∅, ∅⟩) K,   journaling each disposition
+```
+
+No machine dressing is needed and none is used here. There is no control to
+descend into and no continuation to build — every event is atomic — so the
+honest shape is a transition system with one big-step rule per event:
+ρ, σ ⊢ ev ⇓ ρ′, σ′ when the constitution accepts the act, and
+ρ, σ ⊢ ev ⇑ r when it refuses it with reject r. `step` is just the pairing:
+
+```
+step((ρ, σ), ev) = ((ρ′, σ′), ✓)    when  ρ, σ ⊢ ev ⇓ ρ′, σ′
+step((ρ, σ), ev) = ((ρ, σ), ✗r)     when  ρ, σ ⊢ ev ⇑ r
+```
+
+The step is **total**: no event gets stuck. An act the constitution refuses
+does not halt the fold; it leaves ρ and σ untouched and journals the refusal.
+Failure is an answer, not an absence of one. Legitimacy is, by definition, a
+✓ in the journal; there is no other channel into ρ or σ.
 
 Everything below is transcribed from `src/reducer.rs`, `src/scoring.rs`, and
 `src/types.rs`; the tables are `rules_for`, the metafunctions are the private
-helpers, and each fold rule is one arm of `validate_and_fold`.
+helpers, and each rule is one arm of `validate_and_fold`.
 
 ## Syntax
 
@@ -42,44 +56,22 @@ ev  ::= seen(t, p, name)
       | close(t, c, p)
 ```
 
-## Machine states
+## State
 
 ```
-ς ::= ⟨K, ρ, σ, J⟩
-
-K ::= ev · K | ε                 the log yet to fold (kontinuation)
-ρ  : p ⇀ ⟨name, s?, w, t⟩        the franchise (environment)
-σ  = ⟨C, P⟩
+ρ  : p ⇀ ⟨name, s?, w, t⟩        the franchise: who holds which seat, at what weight
+σ  = ⟨C, P⟩                      the docket
 C  : c ⇀ ⟨k, h, φ, opener, t₀, brief, subj?, tgt?,
           R,            recusals        (set of p)
           B?,           bench           (frozen snapshot, or ⊥)
           Ev, O, V, N,  evidence, outcomes, ballots, clerk notes
           t_notice?, resp?, cites, verdict?⟩
 P  : π ⇀ ⟨versions, cited_in, repealed⟩
-J ::= J · ✓ev | J · ✗(ev, r) | ε   the attempt journal (output)
+J ::= J · ✓ev | J · ✗(ev, r) | ε   the attempt journal (the fold's trace)
 ```
 
-A state ⟨ε, ρ, σ, J⟩ is final. The initial state is ⟨K₀, ∅, ⟨∅, ∅⟩, ε⟩ where
-K₀ is `events.jsonl`.
-
-## The two transitions
-
-There are exactly two top-level reductions. Every event takes exactly one of
-them; which one is decided by the fold judgment ρ, σ ⊢ ev ⇓ ρ′, σ′ and its
-complement ρ, σ ⊢ ev ⇑ r.
-
-```
-        ρ, σ ⊢ ev ⇓ ρ′, σ′
-─────────────────────────────────────        [fold]
-⟨ev·K, ρ, σ, J⟩ ↦ ⟨K, ρ′, σ′, J·✓ev⟩
-
-          ρ, σ ⊢ ev ⇑ r
-─────────────────────────────────────        [reject]
-⟨ev·K, ρ, σ, J⟩ ↦ ⟨K, ρ, σ, J·✗(ev,r)⟩
-```
-
-[reject] touches nothing but J. Legitimacy is, by definition, membership of
-✓ev in J; there is no other channel into ρ or σ.
+The initial state is empty: no principals, no cases, no policies. K is
+`events.jsonl`.
 
 ## Metafunctions
 
@@ -123,12 +115,16 @@ window(k) = W(k), defaulting to 48h    (consulted only when h = required)
 M = 1.0 does not make ties acceptable: `tied` is checked separately, and exact
 ties always lapse. M = 1.0 means any strict advantage suffices.
 
-## Fold rules
+## The rules
 
-Throughout, C(c) abbreviates the case record and field updates are functional:
-σ[c.φ := delib] is σ with that one field replaced. Premises are listed in the
-order the reducer checks them; when a premise fails, ⇑ yields the reject named
-by the first failure, which makes the reject relation a function.
+Each rule reads: if the premises hold, the act folds, with the stated update.
+When a premise fails instead, the act reduces by ⇑ to the reject named by the
+first failed premise, in the listed order — which makes ⇑ a function. Note
+that the order matters only to the reject's *label*: rejects change no state,
+so any premise order yields the same accepted history.
+
+Throughout, C(c) abbreviates the case record and updates are functional:
+σ[c.φ := delib] is σ with that one field replaced.
 
 ### Roster
 
@@ -163,7 +159,7 @@ k = appeal   ⇒ tgt = c′ ∧ c′ ∈ dom(C) ∧ C(c′).φ = closed
      ⇓ ρ′, σ[c ↦ ⟨k, h, intake, p, t, brief, subj?, tgt?, ∅, ⊥, …⟩]
 ```
 
-Note the environment extension: naming an unknown subject creates them,
+Note the franchise extension: naming an unknown subject creates them,
 unseated. The court can open a case about anyone; it cannot make them a judge.
 
 ### Recusal
@@ -184,8 +180,8 @@ and never again.
 
 ### The record
 
-Evidence takes the weakest actor premise in the machine — any known principal,
-clerk and subject included. Facts are cheap; authority is not.
+Evidence takes the weakest actor premise in the constitution — any known
+principal, clerk and subject included. Facts are cheap; authority is not.
 
 ```
 p ∈ dom(ρ)      label ≠ ε      body ≠ ε
@@ -276,7 +272,7 @@ Revoting is legal; ballot-box stuffing is structurally impossible.
 
 [close] is the only rule with a nontrivial decision procedure, and it comes
 in two shapes that are both *accepted* folds. A failed tally is not a reject;
-it is a lapse. The machine refuses acts, never verdicts.
+it is a lapse. The court refuses acts, never verdicts.
 
 ```
 ⟨p, _, _⟩ ∈ C(c).B  ∨  sovereign(ρ, p)          C(c).φ = delib
@@ -305,8 +301,8 @@ The verdict v is a value, not a view: the full ordering (unvoted outcomes at
 weight 0), the cast and sitting weights, the margin, and the bench itself are
 copied into it. Nothing recomputes later.
 
-`enact` is the only action-at-a-distance in the machine, and it fires only on
-a verdict:
+`enact` is the only action-at-a-distance in the constitution, and it fires
+only on a verdict:
 
 ```
 enact(σ, c, v) =
@@ -319,7 +315,7 @@ enact(σ, c, v) =
   else σ₁
 ```
 
-## Phases, as the machine walks them
+## Phases, as the fold walks them
 
 ```
          notify              deliberate            close, tally holds
@@ -337,19 +333,22 @@ immutable; it is only ever reinterpreted by a later court.
 
 ## Properties
 
-**Totality.** For every ς = ⟨ev·K, ρ, σ, J⟩ exactly one of [fold], [reject]
-applies: ⇓ is defined when all premises of some fold rule hold, ⇑ on the
-complement, and the first-failed-premise ordering makes both deterministic.
-The machine has no stuck states.
+**Totality.** For every state and event, exactly one of ⇓, ⇑ applies: ⇓ when
+all premises of some rule hold, ⇑ on the complement. The fold never gets
+stuck.
 
-**Determinism.** ↦ is a function, so the final state is determined by K₀
-alone. This is the boot theorem: replaying `events.jsonl` from the initial
+**Determinism, and the boot theorem.** `step` is a function, so the final
+state is determined by the log alone: replaying `events.jsonl` from the empty
 state reconstructs ρ, σ, and J exactly (`replay_accepted` folds the accepted
 subsequence, which by determinism refolds identically).
 
-**Journal completeness.** J is a strictly growing trace, and π₄ (the journal
-projection) of a run records every event submitted, with its disposition.
-Auditing is reading J; there is nothing else to read.
+**Order-independence of state.** Premise order names rejects; it never shapes
+state. Since ⇑ leaves ρ and σ untouched, reordering the premise checks changes
+only the labels on ✗ entries in J, never the accepted history.
+
+**Journal completeness.** J is a strictly growing trace recording every event
+submitted, with its disposition. Auditing is reading J; there is nothing else
+to read.
 
 **Frozen-bench invariant.** After [deliberate] fires on c, no rule consults
 ρ to authorize an act *within* c ([vote] and [close] read B). The franchise
