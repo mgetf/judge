@@ -5,9 +5,11 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 
+use crate::action::Action;
 use crate::bot::{self, DiscordBindings};
 use crate::clock::now_ms;
 use crate::config::CourtConfig;
+use crate::ids::{unique_slug, CaseId, EvidenceId, OutcomeId};
 use crate::discord::{roster_from_members, DiscordClient, DiscordEnv};
 use crate::event_log::EventLog;
 use crate::events::Event;
@@ -135,6 +137,66 @@ pub async fn serve_on(
         let _ = axum::serve(listener, app).await;
     });
     Ok(JudgeServer { addr, handle })
+}
+
+pub fn allocate_ids(gov: &GovState, action: Action) -> Result<Action, String> {
+    match action {
+        Action::OpenCase {
+            id,
+            kind,
+            hearing,
+            brief,
+            subject,
+            target_case,
+        } => {
+            let next = unique_slug(id.as_str(), |s| gov.cases.keys().any(|k| k.as_str() == s));
+            Ok(Action::OpenCase {
+                id: CaseId::parse(next).map_err(|e| e.to_string())?,
+                kind,
+                hearing,
+                brief,
+                subject,
+                target_case,
+            })
+        }
+        Action::FileEvidence {
+            case,
+            id,
+            label,
+            body,
+        } => {
+            let next = if let Some(c) = gov.cases.get(&case) {
+                unique_slug(id.as_str(), |s| c.evidence.keys().any(|k| k.as_str() == s))
+            } else {
+                id.to_string()
+            };
+            Ok(Action::FileEvidence {
+                case,
+                id: EvidenceId::parse(next).map_err(|e| e.to_string())?,
+                label,
+                body,
+            })
+        }
+        Action::ProposeOutcome {
+            case,
+            id,
+            body,
+            enacts_policy,
+        } => {
+            let next = if let Some(c) = gov.cases.get(&case) {
+                unique_slug(id.as_str(), |s| c.outcomes.keys().any(|k| k.as_str() == s))
+            } else {
+                id.to_string()
+            };
+            Ok(Action::ProposeOutcome {
+                case,
+                id: OutcomeId::parse(next).map_err(|e| e.to_string())?,
+                body,
+                enacts_policy,
+            })
+        }
+        other => Ok(other),
+    }
 }
 
 pub async fn commit(state: &AppState, ev: Event) -> Result<(), AppError> {

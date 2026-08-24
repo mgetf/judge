@@ -77,6 +77,17 @@ pub enum DecisionKind {
 }
 
 impl DecisionKind {
+    pub fn all() -> [Self; 6] {
+        [
+            Self::Record,
+            Self::Routine,
+            Self::Personnel,
+            Self::Policy,
+            Self::Constitutional,
+            Self::Appeal,
+        ]
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Record => "record",
@@ -85,6 +96,28 @@ impl DecisionKind {
             Self::Policy => "policy",
             Self::Constitutional => "constitutional",
             Self::Appeal => "appeal",
+        }
+    }
+
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            Self::Record => "Record — fact / obvious ban",
+            Self::Routine => "Routine — day-to-day mod action",
+            Self::Personnel => "Personnel — hire, fire, demote",
+            Self::Policy => "Policy — standing rule / precedent",
+            Self::Constitutional => "Constitutional — change the rules",
+            Self::Appeal => "Appeal — reopen a closed case",
+        }
+    }
+
+    pub fn menu_hint(self) -> &'static str {
+        match self {
+            Self::Record => "Cheats, smurfs, bans already obvious on the record",
+            Self::Routine => "Fast mod work. Modest vote margin.",
+            Self::Personnel => "Hearing is still opt-in on the case",
+            Self::Policy => "Becomes citable after the verdict",
+            Self::Constitutional => "Quorums, kinds, the rules of the rules",
+            Self::Appeal => "Vacate a closed case. Set the target in /case.",
         }
     }
 }
@@ -111,10 +144,28 @@ impl FromStr for DecisionKind {
 }
 
 impl Hearing {
+    pub fn all() -> [Self; 2] {
+        [Self::None, Self::Required]
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::None => "none",
             Self::Required => "required",
+        }
+    }
+
+    pub fn menu_label(self) -> &'static str {
+        match self {
+            Self::None => "No hearing — document and decide",
+            Self::Required => "Hearing required — notify the subject",
+        }
+    }
+
+    pub fn menu_hint(self) -> &'static str {
+        match self {
+            Self::None => "Default. No notice, no response slot.",
+            Self::Required => "Subject must be told and given a chance to answer",
         }
     }
 }

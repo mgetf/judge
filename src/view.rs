@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use crate::action::Wire;
 use crate::ids::{CaseId, PrincipalId};
 use crate::links::Cite;
+use crate::types::DecisionKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {
@@ -26,6 +27,7 @@ pub struct SectionItem {
     pub id: String,
     pub testid: String,
     pub text: String,
+    pub href: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,13 +49,27 @@ pub struct Btn {
 }
 
 #[derive(Debug, Clone)]
+pub struct SelectOpt {
+    pub value: String,
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum FieldControl {
+    Line,
+    Paragraph,
+    Select { options: Vec<SelectOpt> },
+}
+
+#[derive(Debug, Clone)]
 pub struct ModalField {
     pub custom_id: String,
     pub label: String,
     pub testid: String,
-    pub paragraph: bool,
     pub required: bool,
     pub placeholder: String,
+    pub control: FieldControl,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +78,11 @@ pub struct Modal {
     pub title: String,
     pub testid: String,
     pub fields: Vec<ModalField>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModalCtx {
+    pub outcomes: Vec<SelectOpt>,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +98,7 @@ pub struct View {
     pub buttons: Vec<Btn>,
     pub notice: Option<String>,
     pub channel_url: Option<String>,
+    pub modal_ctx: ModalCtx,
 }
 
 fn name_of(people: &HashMap<PrincipalId, Principal>, id: &PrincipalId) -> String {
@@ -117,6 +139,7 @@ pub fn see_docket(
                     p.seat.as_ref().map(Seat::label).unwrap_or("—"),
                     p.weight
                 ),
+                href: None,
             })
             .collect(),
         empty: "No one seated.",
@@ -130,6 +153,7 @@ pub fn see_docket(
                 id: c.id.to_string(),
                 testid: format!("case-row-{}", c.id),
                 text: format!("{} · {} · {}", c.id, c.kind, c.phase),
+                href: Some(Cite::Case { id: c.id.clone() }.path()),
             })
             .collect(),
         empty: "No cases yet.",
@@ -157,6 +181,7 @@ pub fn see_docket(
         buttons,
         notice: notice.map(str::to_string),
         channel_url,
+        modal_ctx: ModalCtx::default(),
     }
 }
 
@@ -197,6 +222,7 @@ pub fn see_case(
                     e.body,
                     name_of(people, &e.filed_by)
                 ),
+                href: None,
             })
             .collect(),
         empty: "None filed. Drop an attachment in the case channel or use File evidence.",
@@ -211,6 +237,7 @@ pub fn see_case(
                 id: o.id.to_string(),
                 testid: format!("outcome-{}", o.id),
                 text: format!("{} — {}", o.id, o.body),
+                href: None,
             })
             .collect(),
         empty: "None proposed.",
@@ -231,6 +258,7 @@ pub fn see_case(
                     b.weight,
                     b.reason
                 ),
+                href: None,
             })
             .collect(),
         empty: "No ballots yet.",
@@ -240,9 +268,13 @@ pub fn see_case(
         target: Target::Cite(Cite::Case {
             id: case.id.clone(),
         }),
-        title: case.id.to_string(),
+        title: if case.brief.is_empty() {
+            case.id.to_string()
+        } else {
+            case.brief.clone()
+        },
         title_testid: "case-title".into(),
-        lede: case.brief.clone(),
+        lede: format!("#{}", case.id),
         chips: vec![
             Chip {
                 label: case.kind.to_string(),
@@ -263,6 +295,21 @@ pub fn see_case(
         buttons: case_buttons(case, seated, on_bench, is_subject),
         notice: notice.map(str::to_string),
         channel_url,
+        modal_ctx: ModalCtx {
+            outcomes: case
+                .outcomes
+                .values()
+                .map(|o| SelectOpt {
+                    value: o.id.to_string(),
+                    label: if o.body.len() > 100 {
+                        format!("{}...", &o.body[..97])
+                    } else {
+                        o.body.clone()
+                    },
+                    description: o.id.to_string(),
+                })
+                .collect(),
+        },
     }
 }
 
@@ -336,7 +383,7 @@ fn case_buttons(case: &Case, seated: bool, on_bench: bool, is_subject: bool) -> 
     out
 }
 
-pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
+pub fn modal_for(verb: &str, case: Option<&str>, ctx: &ModalCtx) -> Result<Modal, String> {
     let do_id = Wire::custom_id("do", verb, case);
     match verb {
         "case" | "open_case" => Ok(Modal {
@@ -344,18 +391,32 @@ pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
             title: "Create a ticket".into(),
             testid: "open-case-modal".into(),
             fields: vec![
-                field("id", "Id", "case-id", false, true, ""),
-                field("kind", "Kind", "case-kind", false, false, "record"),
-                field("hearing", "Hearing", "case-hearing", false, false, "none"),
+                field(
+                    "title",
+                    "Title",
+                    "case-title-field",
+                    true,
+                    FieldControl::Line,
+                    "STV aimbot on mge_training",
+                ),
+                select_field("kind", "Kind", "case-kind", true, kind_options()),
+                select_field("hearing", "Hearing", "case-hearing", true, hearing_options()),
                 field(
                     "subject",
                     "Subject",
                     "case-subject",
                     false,
-                    false,
-                    "discord id",
+                    FieldControl::Line,
+                    "Discord user id, if someone is on the hook",
                 ),
-                field("brief", "Brief", "case-brief", true, true, ""),
+                field(
+                    "brief",
+                    "Brief",
+                    "case-brief",
+                    false,
+                    FieldControl::Paragraph,
+                    "Optional. Defaults to the title.",
+                ),
             ],
         }),
         "evidence" | "file_evidence" => Ok(Modal {
@@ -363,14 +424,20 @@ pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
             title: "File evidence".into(),
             testid: "file-evidence-modal".into(),
             fields: vec![
-                field("id", "Id", "evidence-id", false, true, ""),
-                field("label", "Label", "evidence-label", false, true, ""),
+                field(
+                    "label",
+                    "Label",
+                    "evidence-label",
+                    true,
+                    FieldControl::Line,
+                    "STV demo",
+                ),
                 field(
                     "body",
-                    "Attachment URL or body",
+                    "Attachment URL or notes",
                     "evidence-body",
                     true,
-                    true,
+                    FieldControl::Paragraph,
                     "Discord attachment URL",
                 ),
             ],
@@ -380,53 +447,110 @@ pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
             title: "Propose outcome".into(),
             testid: "propose-outcome-modal".into(),
             fields: vec![
-                field("id", "Id", "outcome-id", false, true, ""),
-                field("body", "Body", "outcome-body", true, true, ""),
+                field(
+                    "body",
+                    "Outcome",
+                    "outcome-body",
+                    true,
+                    FieldControl::Paragraph,
+                    "Permanent cheat ban",
+                ),
                 field(
                     "enacts_policy",
                     "Enacts policy",
                     "outcome-policy",
                     false,
-                    false,
-                    "",
+                    FieldControl::Line,
+                    "optional policy id",
                 ),
             ],
         }),
-        "vote" => Ok(Modal {
-            custom_id: do_id,
-            title: "Cast ballot".into(),
-            testid: "cast-vote-modal".into(),
-            fields: vec![
-                field("outcome", "Outcome", "vote-outcome", false, true, ""),
-                field("reason", "Reason", "vote-reason", true, true, ""),
-            ],
-        }),
+        "vote" => {
+            if ctx.outcomes.is_empty() {
+                return Err("propose an outcome first".into());
+            }
+            Ok(Modal {
+                custom_id: do_id,
+                title: "Cast ballot".into(),
+                testid: "cast-vote-modal".into(),
+                fields: vec![
+                    select_field("outcome", "Outcome", "vote-outcome", true, ctx.outcomes.clone()),
+                    field(
+                        "reason",
+                        "Reason",
+                        "vote-reason",
+                        true,
+                        FieldControl::Paragraph,
+                        "Why this outcome",
+                    ),
+                ],
+            })
+        }
         "respond" => Ok(Modal {
             custom_id: do_id,
             title: "Response".into(),
             testid: "respond-modal".into(),
-            fields: vec![field("body", "Body", "response-body", true, true, "")],
+            fields: vec![field(
+                "body",
+                "Body",
+                "response-body",
+                true,
+                FieldControl::Paragraph,
+                "",
+            )],
         }),
         other => Err(format!("no modal for {other}")),
     }
+}
+
+fn kind_options() -> Vec<SelectOpt> {
+    DecisionKind::all()
+        .into_iter()
+        .map(|k| SelectOpt {
+            value: k.as_str().into(),
+            label: k.menu_label().into(),
+            description: k.menu_hint().into(),
+        })
+        .collect()
+}
+
+fn hearing_options() -> Vec<SelectOpt> {
+    Hearing::all()
+        .into_iter()
+        .map(|h| SelectOpt {
+            value: h.as_str().into(),
+            label: h.menu_label().into(),
+            description: h.menu_hint().into(),
+        })
+        .collect()
 }
 
 fn field(
     custom_id: &str,
     label: &str,
     testid: &str,
-    paragraph: bool,
     required: bool,
+    control: FieldControl,
     placeholder: &str,
 ) -> ModalField {
     ModalField {
         custom_id: custom_id.into(),
         label: label.into(),
         testid: testid.into(),
-        paragraph,
         required,
         placeholder: placeholder.into(),
+        control,
     }
+}
+
+fn select_field(
+    custom_id: &str,
+    label: &str,
+    testid: &str,
+    required: bool,
+    options: Vec<SelectOpt>,
+) -> ModalField {
+    field(custom_id, label, testid, required, FieldControl::Select { options }, "")
 }
 
 pub fn verdict_lines(v: &Verdict) -> Vec<String> {
@@ -559,25 +683,39 @@ pub fn discord_modal(modal: &Modal) -> serde_json::Value {
     let components: Vec<serde_json::Value> = modal
         .fields
         .iter()
-        .map(|f| {
-            serde_json::json!({
-                "type": 1,
-                "components": [{
-                    "type": 4,
-                    "custom_id": f.custom_id,
-                    "label": f.label,
-                    "style": if f.paragraph { 2 } else { 1 },
-                    "required": f.required,
-                    "placeholder": f.placeholder,
-                }],
-            })
-        })
+        .filter_map(|f| discord_modal_field(f))
         .collect();
     serde_json::json!({
         "custom_id": modal.custom_id,
         "title": modal.title,
         "components": components,
     })
+}
+
+fn discord_modal_field(f: &ModalField) -> Option<serde_json::Value> {
+    let (style, placeholder) = match &f.control {
+        FieldControl::Line => (1, f.placeholder.clone()),
+        FieldControl::Paragraph => (2, f.placeholder.clone()),
+        FieldControl::Select { options } => {
+            let hint = options
+                .iter()
+                .map(|o| o.value.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            (1, if hint.is_empty() { f.placeholder.clone() } else { hint })
+        }
+    };
+    Some(serde_json::json!({
+        "type": 1,
+        "components": [{
+            "type": 4,
+            "custom_id": f.custom_id,
+            "label": f.label,
+            "style": style,
+            "required": f.required,
+            "placeholder": placeholder,
+        }],
+    }))
 }
 
 #[cfg(test)]
@@ -595,7 +733,7 @@ mod tests {
 
     #[test]
     fn create_modal_fits_discord_limit() {
-        let modal = modal_for("case", None).unwrap();
+        let modal = modal_for("case", None, &ModalCtx::default()).unwrap();
         assert!(
             modal.fields.len() <= 5,
             "Discord modals allow 5 text inputs, got {}",

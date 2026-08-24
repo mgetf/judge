@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     expect(page.locator("[data-testid=modal]"))
         .to_be_visible()
         .await?;
-    page.locator("[data-testid=modal] [data-testid=case-id]")
+    page.locator("[data-testid=modal] [data-testid=case-title-field]")
         .fill("case-cheat-1", None)
         .await?;
     page.locator("[data-testid=modal] [data-testid=case-brief]")

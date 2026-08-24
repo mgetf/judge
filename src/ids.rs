@@ -76,6 +76,59 @@ macro_rules! link_id {
     };
 }
 
+/// Lowercase slug for court-minted ids. Spaces and punctuation become `-`.
+pub fn slugify(s: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for c in s.chars() {
+        let c = c.to_ascii_lowercase();
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+            dash = false;
+        } else if !out.is_empty() && !dash {
+            out.push('-');
+            dash = true;
+        }
+    }
+    let out = out.trim_matches('-').to_string();
+    if out.len() <= 48 {
+        return out;
+    }
+    let mut cut = out[..48].to_string();
+    if let Some(i) = cut.rfind('-') {
+        if i >= 12 {
+            cut.truncate(i);
+        }
+    }
+    cut.trim_matches('-').to_string()
+}
+
+/// Prefix `case-` when the slug is a human title, not an already-minted id.
+pub fn case_slug(s: &str) -> String {
+    let slug = slugify(s);
+    if slug.is_empty() {
+        return "case".into();
+    }
+    if slug.starts_with("case-") || slug.starts_with("c-") {
+        slug
+    } else {
+        format!("case-{slug}")
+    }
+}
+
+pub fn unique_slug(base: &str, taken: impl Fn(&str) -> bool) -> String {
+    if !taken(base) {
+        return base.to_string();
+    }
+    for n in 2..1000 {
+        let cand = format!("{base}-{n}");
+        if !taken(&cand) {
+            return cand;
+        }
+    }
+    format!("{base}-x")
+}
+
 link_id!(PrincipalId, "principal");
 link_id!(CaseId, "case");
 link_id!(OutcomeId, "outcome");
@@ -102,5 +155,16 @@ mod tests {
         assert!(CaseId::parse("/leading").is_err());
         assert!(CaseId::parse("trailing/").is_err());
         assert!(CaseId::parse("bad?").is_err());
+    }
+
+    #[test]
+    fn slugify_titles() {
+        assert_eq!(
+            case_slug("STV aimbot on mge_training"),
+            "case-stv-aimbot-on-mge-training"
+        );
+        assert_eq!(case_slug("case-cheat-1"), "case-cheat-1");
+        assert_eq!(slugify("Permanent cheat ban"), "permanent-cheat-ban");
+        assert_eq!(unique_slug("case-a", |s| s == "case-a"), "case-a-2");
     }
 }

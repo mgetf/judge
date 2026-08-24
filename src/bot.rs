@@ -19,7 +19,8 @@ use crate::ticket::{
     VIEW_CHANNEL,
 };
 use crate::view::{
-    case_channel_name, discord_modal, discord_payload, modal_for, see_case, see_docket, Target,
+    case_channel_name, discord_modal, discord_payload, modal_for, see_case, see_docket, ModalCtx,
+    SelectOpt, Target,
     View,
 };
 
@@ -461,7 +462,8 @@ async fn handle_component(
         .ok_or_else(|| AppError::BadRequest("missing custom_id".into()))?;
     match Wire::parse(custom_id).map_err(AppError::BadRequest)? {
         Wire::Ask { verb, case } => {
-            let modal = modal_for(&verb, case.as_deref()).map_err(AppError::BadRequest)?;
+            let ctx = modal_ctx_for(state, &verb, case.as_deref()).await;
+            let modal = modal_for(&verb, case.as_deref(), &ctx).map_err(AppError::BadRequest)?;
             Ok(serde_json::json!({
                 "type": 9,
                 "data": discord_modal(&modal),
@@ -620,6 +622,37 @@ async fn view_for_interaction_channel(state: &AppState, body: &Value) -> View {
         }
     }
     current_docket_view(state, None).await
+}
+
+async fn modal_ctx_for(state: &AppState, verb: &str, case: Option<&str>) -> ModalCtx {
+    if verb != "vote" {
+        return ModalCtx::default();
+    }
+    let Some(cid) = case else {
+        return ModalCtx::default();
+    };
+    let Ok(id) = CaseId::parse(cid) else {
+        return ModalCtx::default();
+    };
+    let g = state.gov.read().await;
+    let Some(case) = g.cases.get(&id) else {
+        return ModalCtx::default();
+    };
+    ModalCtx {
+        outcomes: case
+            .outcomes
+            .values()
+            .map(|o| SelectOpt {
+                value: o.id.to_string(),
+                label: if o.body.len() > 100 {
+                    format!("{}...", &o.body[..97])
+                } else {
+                    o.body.clone()
+                },
+                description: o.id.to_string(),
+            })
+            .collect(),
+    }
 }
 
 async fn case_from_channel(state: &AppState, body: &Value) -> Option<String> {

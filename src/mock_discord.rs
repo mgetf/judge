@@ -1233,7 +1233,7 @@ fn render_pending_modal(data: &Value, user: &MockUser, channel_id: &str) -> Mark
 
 fn modal_field_testid(verb: &str, fid: &str) -> &'static str {
     match (verb, fid) {
-        ("case" | "open_case", "id") => "case-id",
+        ("case" | "open_case", "title") => "case-title-field",
         (_, "kind") => "case-kind",
         (_, "hearing") => "case-hearing",
         (_, "subject") => "case-subject",

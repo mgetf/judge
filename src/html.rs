@@ -5,7 +5,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 use crate::action::Wire;
 use crate::state::{Policy, Principal, Verdict};
 use crate::types::Seat;
-use crate::view::{modal_for, Btn, Modal, Target, View};
+use crate::view::{modal_for, Btn, FieldControl, Modal, ModalField, Target, View};
 
 fn fmt_margin(m: f64) -> String {
     if !m.is_finite() {
@@ -325,7 +325,13 @@ fn view_body(view: &View) -> Markup {
                         li.empty { (sec.empty) }
                     } @else {
                         @for item in &sec.items {
-                            li id=(format!("{}-{}", sec.testid, item.id)) data-testid=(item.testid) { (item.text) }
+                            li id=(format!("{}-{}", sec.testid, item.id)) data-testid=(item.testid) {
+                                @if let Some(href) = &item.href {
+                                    a href=(href) { (item.text) }
+                                } @else {
+                                    (item.text)
+                                }
+                            }
                         }
                     }
                 }
@@ -333,12 +339,12 @@ fn view_body(view: &View) -> Markup {
             @if let Some(v) = &view.verdict {
                 (render_verdict(v))
             }
-            (action_bar(&view.buttons, &view.target))
+            (action_bar(&view.buttons, &view.target, &view.modal_ctx))
         }
     }
 }
 
-fn action_bar(buttons: &[Btn], target: &Target) -> Markup {
+fn action_bar(buttons: &[Btn], target: &Target, ctx: &crate::view::ModalCtx) -> Markup {
     let case = match target {
         Target::Cite(crate::links::Cite::Case { id }) => Some(id.as_str().to_string()),
         _ => None,
@@ -364,7 +370,7 @@ fn action_bar(buttons: &[Btn], target: &Target) -> Markup {
         }
         @for b in buttons {
             @if b.opens_modal {
-                @if let Ok(modal) = modal_from_btn(b, case.as_deref()) {
+                @if let Ok(modal) = modal_from_btn(b, case.as_deref(), ctx) {
                     (render_dialog(&modal, case.as_deref()))
                 }
             }
@@ -389,10 +395,10 @@ fn verb_of(custom_id: &str) -> String {
         .unwrap_or_default()
 }
 
-fn modal_from_btn(b: &Btn, case: Option<&str>) -> Result<Modal, String> {
+fn modal_from_btn(b: &Btn, case: Option<&str>, ctx: &crate::view::ModalCtx) -> Result<Modal, String> {
     let w = Wire::parse(&b.custom_id)?;
     match w {
-        Wire::Ask { verb, case: c } => modal_for(&verb, c.as_deref().or(case)),
+        Wire::Ask { verb, case: c } => modal_for(&verb, c.as_deref().or(case), ctx),
         _ => Err("not a modal".into()),
     }
 }
@@ -416,14 +422,7 @@ fn render_dialog(modal: &Modal, case: Option<&str>) -> Markup {
                     input type="hidden" name="case" value=(c);
                 }
                 @for f in &modal.fields {
-                    label.field {
-                        span { (f.label) }
-                        @if f.paragraph {
-                            textarea name=(f.custom_id) data-testid=(f.testid) required[f.required] placeholder=(f.placeholder) {}
-                        } @else {
-                            input name=(f.custom_id) data-testid=(f.testid) required[f.required] placeholder=(f.placeholder);
-                        }
-                    }
+                    (render_field(f))
                 }
                 button type="submit" data-testid=(format!("{}-submit", match verb.as_str() {
                     "case" | "open_case" => "open-case",
@@ -436,6 +435,33 @@ fn render_dialog(modal: &Modal, case: Option<&str>) -> Markup {
                 button.quiet type="button" onclick="this.closest('dialog').close()" { "Cancel" }
             }
         }
+    }
+}
+
+fn render_field(f: &ModalField) -> Markup {
+    match &f.control {
+        FieldControl::Line => html! {
+            label.field {
+                span { (f.label) }
+                input name=(f.custom_id) data-testid=(f.testid) required[f.required] placeholder=(f.placeholder);
+            }
+        },
+        FieldControl::Paragraph => html! {
+            label.field {
+                span { (f.label) }
+                textarea name=(f.custom_id) data-testid=(f.testid) required[f.required] placeholder=(f.placeholder) {}
+            }
+        },
+        FieldControl::Select { options } => html! {
+            label.field {
+                span { (f.label) }
+                select name=(f.custom_id) data-testid=(f.testid) required[f.required] {
+                    @for opt in options {
+                        option value=(opt.value) title=(opt.description) { (opt.label) }
+                    }
+                }
+            }
+        },
     }
 }
 

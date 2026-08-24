@@ -38,10 +38,10 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .to_be_visible()
         .await
         .expect("modal");
-    page.locator("[data-testid=modal] [data-testid=case-id]")
+    page.locator("[data-testid=modal] [data-testid=case-title-field]")
         .fill("case-cheat-1", None)
         .await
-        .expect("case id");
+        .expect("case title");
     page.locator("[data-testid=modal] [data-testid=case-brief]")
         .fill("STV aimbot on mge_training", None)
         .await
@@ -64,7 +64,7 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .await
         .expect("open case channel");
     expect(page.locator("[data-testid=case-title]"))
-        .to_have_text("case-cheat-1")
+        .to_have_text("STV aimbot on mge_training")
         .await
         .expect("live case view");
     expect(page.locator("[data-testid=case-phase]"))
@@ -97,10 +97,6 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .click(None)
         .await
         .unwrap();
-    page.locator("[data-testid=modal] [data-testid=outcome-id]")
-        .fill("cheat-ban", None)
-        .await
-        .unwrap();
     page.locator("[data-testid=modal] [data-testid=outcome-body]")
         .fill("Permanent cheat ban", None)
         .await
@@ -112,10 +108,6 @@ async fn chief_records_a_cheat_verdict_in_discord() {
 
     page.locator("[data-testid=propose-outcome]")
         .click(None)
-        .await
-        .unwrap();
-    page.locator("[data-testid=modal] [data-testid=outcome-id]")
-        .fill("no-action", None)
         .await
         .unwrap();
     page.locator("[data-testid=modal] [data-testid=outcome-body]")
@@ -141,7 +133,7 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .await
         .unwrap();
     page.locator("[data-testid=modal] [data-testid=vote-outcome]")
-        .fill("cheat-ban", None)
+        .fill("permanent-cheat-ban", None)
         .await
         .unwrap();
     page.locator("[data-testid=modal] [data-testid=vote-reason]")
@@ -173,14 +165,17 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .to_be_visible()
         .await
         .expect("verdict snapshot");
+    expect(page.locator("[data-testid=winner]"))
+        .to_contain_text("permanent-cheat-ban")
+        .await
+        .expect("winner");
+    page.goto(&format!("{}/app?as_user=100", stack.mock.base_url), None)
+        .await
+        .expect("reload guild for channel rename");
     expect(page.locator("[data-testid=channel-closed-case-cheat-1]"))
         .to_be_visible()
         .await
         .expect("closed ticket rename");
-    expect(page.locator("[data-testid=winner]"))
-        .to_contain_text("cheat-ban")
-        .await
-        .expect("winner");
 
     let _ = browser.close().await;
     stack.abort();

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use crate::events::Event;
-use crate::ids::{CaseId, EvidenceId, OutcomeId, PolicyId, PrincipalId};
+use crate::ids::{case_slug, slugify, CaseId, EvidenceId, OutcomeId, PolicyId, PrincipalId};
 use crate::links::Cite;
 use crate::types::{DecisionKind, Hearing, Ts};
 
@@ -145,6 +145,8 @@ pub struct EvalForm {
     #[serde(default)]
     pub id: String,
     #[serde(default)]
+    pub title: String,
+    #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub hearing: String,
@@ -171,6 +173,7 @@ impl EvalForm {
         let mut fields = BTreeMap::new();
         fields.insert("case".into(), self.case);
         fields.insert("id".into(), self.id);
+        fields.insert("title".into(), self.title);
         fields.insert("kind".into(), self.kind);
         fields.insert("hearing".into(), self.hearing);
         fields.insert("brief".into(), self.brief);
@@ -201,34 +204,61 @@ pub fn parse_action(verb: &str, fields: &BTreeMap<String, String>) -> Result<Act
         }
     };
     match verb {
-        "open_case" | "case" => Ok(Action::OpenCase {
-            id: CaseId::parse(get("id")).map_err(|e| e.to_string())?,
-            kind: get("kind")
-                .parse::<DecisionKind>()
-                .unwrap_or(DecisionKind::Record),
-            hearing: get("hearing").parse::<Hearing>().unwrap_or(Hearing::None),
-            brief: get("brief"),
-            subject: opt("subject")
-                .map(|s| PrincipalId::parse(s).map_err(|e| e.to_string()))
-                .transpose()?,
-            target_case: opt("target_case")
-                .map(|s| CaseId::parse(s).map_err(|e| e.to_string()))
-                .transpose()?,
-        }),
-        "file_evidence" | "evidence" => Ok(Action::FileEvidence {
-            case: CaseId::parse(get("case")).map_err(|e| e.to_string())?,
-            id: EvidenceId::parse(get("id")).map_err(|e| e.to_string())?,
-            label: get("label"),
-            body: get("body"),
-        }),
-        "propose_outcome" | "outcome" => Ok(Action::ProposeOutcome {
-            case: CaseId::parse(get("case")).map_err(|e| e.to_string())?,
-            id: OutcomeId::parse(get("id")).map_err(|e| e.to_string())?,
-            body: get("body"),
-            enacts_policy: opt("enacts_policy")
-                .map(|s| PolicyId::parse(s).map_err(|e| e.to_string()))
-                .transpose()?,
-        }),
+        "open_case" | "case" => {
+            let title = opt("title");
+            let mut brief = get("brief");
+            if brief.is_empty() {
+                brief = title.clone().unwrap_or_default();
+            }
+            let seed = opt("id")
+                .or(title)
+                .or_else(|| (!brief.is_empty()).then_some(brief.clone()))
+                .ok_or_else(|| "give the ticket a title".to_string())?;
+            Ok(Action::OpenCase {
+                id: CaseId::parse(case_slug(&seed)).map_err(|e| e.to_string())?,
+                kind: get("kind")
+                    .parse::<DecisionKind>()
+                    .unwrap_or(DecisionKind::Record),
+                hearing: get("hearing").parse::<Hearing>().unwrap_or(Hearing::None),
+                brief,
+                subject: opt("subject")
+                    .map(|s| PrincipalId::parse(s).map_err(|e| e.to_string()))
+                    .transpose()?,
+                target_case: opt("target_case")
+                    .map(|s| CaseId::parse(s).map_err(|e| e.to_string()))
+                    .transpose()?,
+            })
+        }
+        "file_evidence" | "evidence" => {
+            let label = get("label");
+            let body = get("body");
+            let seed = opt("id")
+                .or_else(|| (!label.is_empty()).then_some(label.clone()))
+                .or_else(|| (!body.is_empty()).then_some(body.clone()))
+                .ok_or_else(|| "give the evidence a label".to_string())?;
+            let slug = slugify(&seed);
+            Ok(Action::FileEvidence {
+                case: CaseId::parse(get("case")).map_err(|e| e.to_string())?,
+                id: EvidenceId::parse(&slug).map_err(|e| e.to_string())?,
+                label,
+                body,
+            })
+        }
+        "propose_outcome" | "outcome" => {
+            let body = get("body");
+            let seed = opt("id")
+                .or_else(|| (!body.is_empty()).then_some(body.clone()))
+                .ok_or_else(|| "describe the outcome".to_string())?;
+            let slug = slugify(&seed);
+            Ok(Action::ProposeOutcome {
+                case: CaseId::parse(get("case")).map_err(|e| e.to_string())?,
+                id: OutcomeId::parse(&slug).map_err(|e| e.to_string())?,
+                body,
+                enacts_policy: opt("enacts_policy")
+                    .map(|s| PolicyId::parse(s).map_err(|e| e.to_string()))
+                    .transpose()?,
+            })
+        }
         "notify" => Ok(Action::NotifySubject {
             case: CaseId::parse(get("case")).map_err(|e| e.to_string())?,
         }),
