@@ -188,9 +188,10 @@ pub async fn after_commit(state: &AppState, ev: &Event) -> Result<(), AppError> 
             refresh_docket(state).await?;
             archive_ticket(state, case).await?;
         }
-        Event::RosterSynced { .. } | Event::PrincipalSeen { .. } => {
+        Event::RosterSynced { .. } => {
             refresh_docket(state).await?;
         }
+        Event::PrincipalSeen { .. } => {}
     }
     Ok(())
 }

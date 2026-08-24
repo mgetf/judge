@@ -2,7 +2,22 @@
 
 mod common;
 
+use std::time::Duration;
+
 use serde_json::json;
+
+async fn wait_channel(stack: &common::Stack, name: &str) {
+    for _ in 0..100 {
+        if stack.mock.channel_names().iter().any(|n| n == name) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!(
+        "missing channel {name}: {:?}",
+        stack.mock.channel_names()
+    );
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn case_channel_is_the_chat_and_view_live_updates() {
@@ -75,12 +90,7 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         .await
         .unwrap();
     assert!(resp.status().is_success(), "{}", resp.text().await.unwrap());
-
-    let names = stack.mock.channel_names();
-    assert!(
-        names.iter().any(|n| n == "case-cheat-1"),
-        "case channel created: {names:?}"
-    );
+    wait_channel(&stack, "case-cheat-1").await;
     let overwrites = stack
         .mock
         .channel_overwrites("case-cheat-1")
@@ -326,20 +336,23 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         "{case_page}"
     );
 
-    let transcript = client
-        .get(format!("{}/cases/case-cheat-1/transcript", stack.judge_url))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(transcript.status(), 200);
-    let html = transcript.text().await.unwrap();
-    assert!(html.contains("Transcript case-cheat-1"), "{html}");
+    wait_channel(&stack, "closed-case-cheat-1").await;
 
-    let names = stack.mock.channel_names();
-    assert!(
-        names.iter().any(|n| n == "closed-case-cheat-1"),
-        "closed ticket should be renamed: {names:?}"
-    );
+    let mut transcript = None;
+    for _ in 0..100 {
+        let resp = client
+            .get(format!("{}/cases/case-cheat-1/transcript", stack.judge_url))
+            .send()
+            .await
+            .unwrap();
+        if resp.status() == 200 {
+            transcript = Some(resp.text().await.unwrap());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let html = transcript.expect("transcript saved after close");
+    assert!(html.contains("Transcript case-cheat-1"), "{html}");
 
     stack.abort();
 }

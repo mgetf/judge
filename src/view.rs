@@ -355,14 +355,6 @@ pub fn modal_for(verb: &str, case: Option<&str>) -> Result<Modal, String> {
                     false,
                     "discord id",
                 ),
-                field(
-                    "target_case",
-                    "Appeal target",
-                    "case-target",
-                    false,
-                    false,
-                    "",
-                ),
                 field("brief", "Brief", "case-brief", true, true, ""),
             ],
         }),
@@ -599,5 +591,17 @@ mod tests {
         assert_eq!(case_channel_name(&id), "case-cheat-1");
         let id = CaseId::parse("Moderation/Slur").unwrap();
         assert_eq!(case_channel_name(&id), "case-moderation-slur");
+    }
+
+    #[test]
+    fn create_modal_fits_discord_limit() {
+        let modal = modal_for("case", None).unwrap();
+        assert!(
+            modal.fields.len() <= 5,
+            "Discord modals allow 5 text inputs, got {}",
+            modal.fields.len()
+        );
+        let payload = discord_modal(&modal);
+        assert_eq!(payload["components"].as_array().unwrap().len(), modal.fields.len());
     }
 }

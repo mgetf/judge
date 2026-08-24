@@ -152,9 +152,12 @@ pub async fn commit(state: &AppState, ev: Event) -> Result<(), AppError> {
         .map(|a| a.seq)
         .unwrap_or(0);
     state.live.publish(seq);
-    if let Err(e) = bot::after_commit(state, &ev).await {
-        tracing::warn!("discord live view: {e}");
-    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        if let Err(e) = bot::after_commit(&state, &ev).await {
+            tracing::warn!("discord live view: {e}");
+        }
+    });
     Ok(())
 }
 
