@@ -156,6 +156,7 @@ pub async fn ensure_ux(state: &AppState) -> Result<(), AppError> {
     {
         tracing::warn!("register commands: {e}");
     }
+    apply_docket_privacy(state).await?;
     refresh_docket(state).await
 }
 
@@ -212,7 +213,12 @@ async fn ensure_case_channel(state: &AppState, id: &CaseId, brief: &str) -> Resu
                 users.push(s.to_string());
             }
         }
-        let roles: Vec<String> = state.config.roles.keys().cloned().collect();
+        let roles = state.config.franchise_role_ids();
+        for p in state.config.franchise_principal_ids() {
+            if !users.contains(&p) {
+                users.push(p);
+            }
+        }
         let overwrites = opened_overwrites(&state.config.guild_id, &roles, &users);
         let ping = format!(
             "<@{}> opened this ticket.{}",
@@ -278,6 +284,7 @@ async fn refresh_docket(state: &AppState) -> Result<(), AppError> {
         b.docket_channel_id = Some(id.clone());
         id
     } else {
+        let overwrites = docket_overwrites(state);
         let ch = state
             .discord
             .create_guild_channel(
@@ -285,7 +292,7 @@ async fn refresh_docket(state: &AppState) -> Result<(), AppError> {
                 "docket",
                 Some("Live court docket"),
                 state.config.court_category_id.as_deref(),
-                None,
+                Some(&overwrites),
             )
             .await
             .map_err(|e| AppError::Discord(e.to_string()))?;
@@ -746,8 +753,62 @@ async fn ticket_people(state: &AppState, id: &CaseId) -> (Vec<String>, Vec<Strin
             users.push(s.to_string());
         }
     }
-    let roles: Vec<String> = state.config.roles.keys().cloned().collect();
-    (users, roles)
+    for p in state.config.franchise_principal_ids() {
+        if !users.contains(&p) {
+            users.push(p);
+        }
+    }
+    (users, state.config.franchise_role_ids())
+}
+
+fn docket_overwrites(state: &AppState) -> serde_json::Value {
+    let roles = state.config.franchise_role_ids();
+    let mut users = state.config.franchise_principal_ids();
+    let bot = state.discord.env().application_id.clone();
+    if !bot.is_empty() && !users.contains(&bot) {
+        users.push(bot);
+    }
+    opened_overwrites(&state.config.guild_id, &roles, &users)
+}
+
+async fn apply_docket_privacy(state: &AppState) -> Result<(), AppError> {
+    let ch = {
+        let b = state.bindings.read().await;
+        b.docket_channel_id
+            .clone()
+            .or_else(|| state.config.docket_channel_id.clone())
+    };
+    let Some(ch) = ch else {
+        return Ok(());
+    };
+    let overwrites = docket_overwrites(state);
+    if let Err(e) = state
+        .discord
+        .modify_channel(&ch, None, None, Some(&overwrites))
+        .await
+    {
+        tracing::warn!("docket privacy: {e}");
+        for row in overwrites.as_array().into_iter().flatten() {
+            let Some(id) = row.get("id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let kind = row.get("type").and_then(|v| v.as_u64()).unwrap_or(0) as u8;
+            let allow = row
+                .get("allow")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let deny = row
+                .get("deny")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            if let Err(e) = state.discord.edit_overwrite(&ch, id, kind, allow, deny).await {
+                tracing::warn!("docket overwrite {id}: {e}");
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn transcript_file(state: &AppState, id: &CaseId) -> PathBuf {

@@ -9,5 +9,6 @@
     "111111111111111111": { "seat": "chief", "weight": 3 },
     "222222222222222222": { "seat": "justice", "weight": 1 },
     "333333333333333333": { "seat": "clerk", "weight": 0 }
-  }
+  },
+  "principals": {}
 }

@@ -23,6 +23,20 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
 
     let names = stack.mock.channel_names();
     assert!(names.iter().any(|n| n == "docket"), "{names:?}");
+    let docket_overwrites = stack
+        .mock
+        .channel_overwrites("docket")
+        .expect("docket overwrites");
+    let docket_rows = docket_overwrites.as_array().expect("overwrite list");
+    assert!(
+        docket_rows.iter().any(|r| r["id"] == "000000000000000000"
+            && r["deny"] == judge::ticket::VIEW_CHANNEL.to_string()),
+        "docket hides @everyone: {docket_overwrites}"
+    );
+    assert!(
+        docket_rows.iter().any(|r| r["id"] == "111111111111111111"),
+        "docket allows franchise roles: {docket_overwrites}"
+    );
 
     let docket_html = client
         .get(format!("{}/see?cite=docket", stack.judge_url))

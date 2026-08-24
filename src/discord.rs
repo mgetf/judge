@@ -447,7 +447,7 @@ pub struct CreatedMessage {
 pub fn roster_from_members(cfg: &CourtConfig, members: &[DiscordMember]) -> Vec<RosterMember> {
     let mut out = Vec::new();
     for m in members {
-        let Some((seat, weight)) = cfg.resolve(&m.roles) else {
+        let Some((seat, weight)) = cfg.resolve_member(&m.user.id, &m.roles) else {
             continue;
         };
         let Ok(id) = PrincipalId::parse(&m.user.id) else {

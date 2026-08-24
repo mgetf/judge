@@ -13,6 +13,9 @@ pub struct CourtConfig {
     pub guild_id: String,
     pub owner_discord_id: String,
     pub roles: BTreeMap<String, RoleBinding>,
+    /// Discord user id → court position. Beats a weaker role mapping.
+    #[serde(default)]
+    pub principals: BTreeMap<String, RoleBinding>,
     /// Existing #docket channel. Created on boot when omitted.
     #[serde(default)]
     pub docket_channel_id: Option<String>,
@@ -78,6 +81,34 @@ impl CourtConfig {
             });
         }
         best
+    }
+
+    /// Role mapping plus an optional per-person override. The stronger seat
+    /// wins, so a named chief stays chief even if they also hold Admin.
+    pub fn resolve_member(
+        &self,
+        principal_id: impl AsRef<str>,
+        discord_role_ids: &[impl AsRef<str>],
+    ) -> Option<(Seat, Weight)> {
+        let from_roles = self.resolve(discord_role_ids);
+        let from_person = self
+            .principals
+            .get(principal_id.as_ref())
+            .map(|b| (Seat::from(b.seat), b.weight));
+        match (from_roles, from_person) {
+            (None, None) => None,
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (Some(a), Some(b)) => Some(pick_higher(a, b)),
+        }
+    }
+
+    pub fn franchise_role_ids(&self) -> Vec<String> {
+        self.roles.keys().cloned().collect()
+    }
+
+    pub fn franchise_principal_ids(&self) -> Vec<String> {
+        self.principals.keys().cloned().collect()
     }
 }
 
@@ -147,5 +178,30 @@ mod tests {
         let parsed = CourtConfig::from_path("config.example.json").unwrap();
         assert_eq!(parsed.roles.len(), 3);
         assert_eq!(parsed.resolve(&["111111111111111111"]).unwrap().1, 3);
+    }
+
+    #[test]
+    fn named_chief_beats_admin_role() {
+        let cfg = CourtConfig::from_json(
+            r#"{
+              "guild_id": "g",
+              "owner_discord_id": "owner",
+              "roles": {
+                "admin": { "seat": "justice", "weight": 2 },
+                "mod":   { "seat": "justice", "weight": 1 }
+              },
+              "principals": {
+                "tommy": { "seat": "chief", "weight": 3 }
+              }
+            }"#,
+        )
+        .unwrap();
+        let (seat, w) = cfg.resolve_member("tommy", &["admin"]).unwrap();
+        assert_eq!(seat, Seat::Chief);
+        assert_eq!(w, 3);
+        let (seat, w) = cfg.resolve_member("mod-only", &["mod"]).unwrap();
+        assert_eq!(seat, Seat::Justice);
+        assert_eq!(w, 1);
+        assert_eq!(cfg.resolve_member("rando", &["unmapped"]), None);
     }
 }
