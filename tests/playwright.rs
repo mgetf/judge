@@ -80,18 +80,14 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .fill("https://mge.tf/demos/abc", None)
         .await
         .unwrap();
-    page.locator("[data-testid=attach-label]")
-        .fill("STV demo", None)
-        .await
-        .unwrap();
     page.locator("[data-testid=attach-submit]")
         .click(None)
         .await
         .unwrap();
-    expect(page.locator("[data-testid=evidence-list]"))
-        .to_contain_text("demo")
+    expect(page.locator("[data-testid=messages]"))
+        .to_contain_text("demo.dem")
         .await
-        .expect("attachment filed");
+        .expect("attachment posted in chat");
 
     page.locator("[data-testid=propose-outcome]")
         .click(None)
@@ -176,6 +172,14 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .to_be_visible()
         .await
         .expect("closed ticket rename");
+
+    page.goto(&format!("{}/cases/case-cheat-1", stack.judge_url), None)
+        .await
+        .expect("goto closed case");
+    expect(page.locator("[data-testid=chat-archive]"))
+        .to_contain_text("demo.dem")
+        .await
+        .expect("website shows archived chat");
 
     let _ = browser.close().await;
     stack.abort();

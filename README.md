@@ -26,9 +26,12 @@ browsing the docket, cases, people, policies, and the raw event log.
   weights via `config.json`, imported wholesale from the guild roster and
   snapshotted (frozen) when deliberation opens. A ballot is one outcome plus a
   reason, counted at the voter's frozen weight.
-- **Hearing is opt-in.** The default case is a record: document evidence,
+- **Hearing is opt-in.** The default case is a record: talk in the ticket,
   freeze a verdict. Notifying the subject and waiting on a response window is a
   special shape (`hearing: required`), not the shape of every case.
+- **Chat is the record.** There is no separate evidence object. Attachments and
+  argument live in the ticket channel. Closing archives the whole chat; the
+  website shows those messages once the case is closed.
 - **AI clerks are first-class but non-sovereign.** Clerks file notes
   (summaries, contradictions, precedent links); they never vote, open, or
   close, and their acts are permanently marked.
@@ -58,7 +61,6 @@ The bot registers guild slash commands and drives the whole flow in Discord
 (`src/bot.rs`, `src/ticket.rs`):
 
 - `/case` — open a case (id, brief, kind, hearing, subject, appeal target)
-- `/evidence` — attach a file as evidence (id defaults to the filename)
 - `/outcome` — propose an outcome (optionally enacting a policy)
 - `/vote` — cast a ballot (outcome + reason)
 - `/notify`, `/deliberate` — advance the phase
@@ -69,8 +71,9 @@ The bot registers guild slash commands and drives the whole flow in Discord
 
 Opening a case creates a private channel, posts and pins a live `see` view,
 and updates the docket message. Closing moves the channel under the closed
-category, renames it, and posts the transcript. Channel/message bindings are
-persisted in `JUDGE_DATA_DIR` so they survive restarts.
+category, renames it, and archives every message in the channel (JSON + HTML
+transcript). Channel/message bindings are persisted in `JUDGE_DATA_DIR` so they
+survive restarts.
 
 ## Web app
 
@@ -78,7 +81,8 @@ An axum server (`src/http.rs`) serves the same state over HTTP with Discord
 OAuth login:
 
 - `/` — the docket
-- `/cases/{id}`, `/cases/{id}/transcript` — case detail and transcript
+- `/cases/{id}`, `/cases/{id}/transcript` — case detail (includes the archived
+  chat after close) and standalone HTML transcript
 - `/people/{id}`, `/policies/{id}`, `/log` — principals, policies, raw log
 - `/see`, `/live`, `/eval` — live-updating views and the action endpoint
 - `/discord/interactions` — Discord interactions webhook (Ed25519-verified)

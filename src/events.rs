@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{CaseId, EvidenceId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
+use crate::ids::{CaseId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
 use crate::links::Cite;
 use crate::types::{ClerkNoteKind, DecisionKind, Hearing, Seat, Ts};
 
@@ -52,14 +52,6 @@ pub enum Event {
         by: PrincipalId,
     },
 
-    EvidenceFiled {
-        ts: Ts,
-        case: CaseId,
-        by: PrincipalId,
-        id: EvidenceId,
-        label: String,
-        body: String,
-    },
     SubjectNotified {
         ts: Ts,
         case: CaseId,

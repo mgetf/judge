@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use crate::events::Event;
-use crate::ids::{case_slug, slugify, CaseId, EvidenceId, OutcomeId, PolicyId, PrincipalId};
+use crate::ids::{case_slug, slugify, CaseId, OutcomeId, PolicyId, PrincipalId};
 use crate::links::Cite;
 use crate::types::{DecisionKind, Hearing, Ts};
 
@@ -20,12 +20,6 @@ pub enum Action {
         brief: String,
         subject: Option<PrincipalId>,
         target_case: Option<CaseId>,
-    },
-    FileEvidence {
-        case: CaseId,
-        id: EvidenceId,
-        label: String,
-        body: String,
     },
     ProposeOutcome {
         case: CaseId,
@@ -73,19 +67,6 @@ impl Action {
                 subject,
                 target_case,
             },
-            Action::FileEvidence {
-                case,
-                id,
-                label,
-                body,
-            } => Event::EvidenceFiled {
-                ts,
-                case,
-                by: who,
-                id,
-                label,
-                body,
-            },
             Action::ProposeOutcome {
                 case,
                 id,
@@ -125,8 +106,7 @@ impl Action {
     pub fn cite(&self) -> Cite {
         match self {
             Action::OpenCase { id, .. } => Cite::Case { id: id.clone() },
-            Action::FileEvidence { case, .. }
-            | Action::ProposeOutcome { case, .. }
+            Action::ProposeOutcome { case, .. }
             | Action::NotifySubject { case }
             | Action::FileResponse { case, .. }
             | Action::OpenDeliberation { case }
@@ -227,21 +207,6 @@ pub fn parse_action(verb: &str, fields: &BTreeMap<String, String>) -> Result<Act
                 target_case: opt("target_case")
                     .map(|s| CaseId::parse(s).map_err(|e| e.to_string()))
                     .transpose()?,
-            })
-        }
-        "file_evidence" | "evidence" => {
-            let label = get("label");
-            let body = get("body");
-            let seed = opt("id")
-                .or_else(|| (!label.is_empty()).then_some(label.clone()))
-                .or_else(|| (!body.is_empty()).then_some(body.clone()))
-                .ok_or_else(|| "give the evidence a label".to_string())?;
-            let slug = slugify(&seed);
-            Ok(Action::FileEvidence {
-                case: CaseId::parse(get("case")).map_err(|e| e.to_string())?,
-                id: EvidenceId::parse(&slug).map_err(|e| e.to_string())?,
-                label,
-                body,
             })
         }
         "propose_outcome" | "outcome" => {

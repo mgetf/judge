@@ -247,7 +247,7 @@ pub fn response_window_ms(kind: DecisionKind, hearing: Hearing) -> Option<i64> {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
-    /// Evidence and outcomes accumulate; recusals are recorded.
+    /// Outcomes accumulate; recusals are recorded. Chat is the record.
     Intake,
     /// Subject has been formally notified ([`Hearing::Required`] only).
     Noticed,
@@ -328,8 +328,6 @@ pub enum Reject {
     UnknownOutcome(OutcomeId),
     #[error("duplicate outcome {0}")]
     DuplicateOutcome(OutcomeId),
-    #[error("duplicate evidence {0}")]
-    DuplicateEvidence(crate::ids::EvidenceId),
     #[error("duplicate note {0}")]
     DuplicateNote(crate::ids::NoteId),
     #[error("empty reason")]

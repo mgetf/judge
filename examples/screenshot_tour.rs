@@ -99,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     page.locator("[data-testid=attach-submit]")
         .click(None)
         .await?;
-    snap(&page, &dirs, "05-attachment-evidence").await?;
+    snap(&page, &dirs, "05-attachment-in-chat").await?;
 
     page.locator("[data-testid=propose-outcome]")
         .click(None)

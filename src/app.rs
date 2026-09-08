@@ -9,7 +9,7 @@ use crate::action::Action;
 use crate::bot::{self, DiscordBindings};
 use crate::clock::now_ms;
 use crate::config::CourtConfig;
-use crate::ids::{unique_slug, CaseId, EvidenceId, OutcomeId};
+use crate::ids::{unique_slug, CaseId, OutcomeId};
 use crate::discord::{roster_from_members, DiscordClient, DiscordEnv};
 use crate::event_log::EventLog;
 use crate::events::Event;
@@ -157,24 +157,6 @@ pub fn allocate_ids(gov: &GovState, action: Action) -> Result<Action, String> {
                 brief,
                 subject,
                 target_case,
-            })
-        }
-        Action::FileEvidence {
-            case,
-            id,
-            label,
-            body,
-        } => {
-            let next = if let Some(c) = gov.cases.get(&case) {
-                unique_slug(id.as_str(), |s| c.evidence.keys().any(|k| k.as_str() == s))
-            } else {
-                id.to_string()
-            };
-            Ok(Action::FileEvidence {
-                case,
-                id: EvidenceId::parse(next).map_err(|e| e.to_string())?,
-                label,
-                body,
             })
         }
         Action::ProposeOutcome {

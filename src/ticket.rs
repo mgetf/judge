@@ -1,6 +1,8 @@
 //! Ticket Tool-shaped Discord tickets. A case is a private channel with a
-//! pinned ticket message, two-step close, closed category, and transcript.
+//! pinned ticket message, two-step close, closed category, and a full-chat
+//! archive.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::action::Wire;
@@ -104,32 +106,115 @@ pub fn close_ask(case: Option<&str>) -> Value {
     })
 }
 
-pub fn transcript_html(case_id: &str, messages: &[Value]) -> String {
-    let mut body = String::new();
-    for m in messages.iter().rev() {
-        let author = m
-            .pointer("/author/username")
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedAttachment {
+    pub filename: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedEmbed {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// One Discord message, frozen when the ticket is archived.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchivedMessage {
+    pub id: String,
+    pub author: String,
+    pub content: String,
+    #[serde(default)]
+    pub embeds: Vec<ArchivedEmbed>,
+    #[serde(default)]
+    pub attachments: Vec<ArchivedAttachment>,
+}
+
+pub fn archive_from_discord(messages: &[Value]) -> Vec<ArchivedMessage> {
+    messages.iter().map(archived_message).collect()
+}
+
+fn archived_message(m: &Value) -> ArchivedMessage {
+    let author = m
+        .pointer("/author/username")
+        .and_then(|v| v.as_str())
+        .or_else(|| m.get("author").and_then(|v| v.as_str()))
+        .unwrap_or("unknown")
+        .to_string();
+    let embeds = m
+        .get("embeds")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .map(|e| ArchivedEmbed {
+                    title: e
+                        .get("title")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    description: e
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let attachments = m
+        .get("attachments")
+        .and_then(|v| v.as_array())
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|a| {
+                    let url = a.get("url").and_then(|v| v.as_str())?.to_string();
+                    let filename = a
+                        .get("filename")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("file")
+                        .to_string();
+                    Some(ArchivedAttachment { filename, url })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ArchivedMessage {
+        id: m.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        author,
+        content: m
+            .get("content")
             .and_then(|v| v.as_str())
-            .or_else(|| m.get("author").and_then(|v| v.as_str()))
-            .unwrap_or("unknown");
-        let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            .unwrap_or("")
+            .to_string(),
+        embeds,
+        attachments,
+    }
+}
+
+pub fn transcript_html(case_id: &str, messages: &[ArchivedMessage]) -> String {
+    let mut body = String::new();
+    for m in messages {
         body.push_str(&format!(
             "<div class=\"msg\" id=\"m-{}\"><span class=\"who\">{}</span><p>{}</p></div>\n",
-            esc(id),
-            esc(author),
-            esc(content)
+            esc(&m.id),
+            esc(&m.author),
+            esc(&m.content)
         ));
-        if let Some(embeds) = m.get("embeds").and_then(|v| v.as_array()) {
-            for e in embeds {
-                if let Some(title) = e.get("title").and_then(|v| v.as_str()) {
-                    body.push_str(&format!("<div class=\"embed\"><h3>{}</h3>", esc(title)));
-                    if let Some(d) = e.get("description").and_then(|v| v.as_str()) {
-                        body.push_str(&format!("<p>{}</p>", esc(d)));
-                    }
-                    body.push_str("</div>\n");
+        for e in &m.embeds {
+            if let Some(title) = &e.title {
+                body.push_str(&format!("<div class=\"embed\"><h3>{}</h3>", esc(title)));
+                if let Some(d) = &e.description {
+                    body.push_str(&format!("<p>{}</p>", esc(d)));
                 }
+                body.push_str("</div>\n");
             }
+        }
+        for a in &m.attachments {
+            body.push_str(&format!(
+                "<p class=\"att\"><a href=\"{}\">{}</a></p>\n",
+                esc(&a.url),
+                esc(&a.filename)
+            ));
         }
     }
     format!(
@@ -173,6 +258,24 @@ mod tests {
         assert_eq!(arr[1]["allow"], TALK.to_string());
         assert_eq!(arr[2]["id"], "100");
         assert_eq!(arr[2]["type"], 1);
+    }
+
+    #[test]
+    fn archive_keeps_chat_and_attachments() {
+        let msgs = vec![serde_json::json!({
+            "id": "1",
+            "content": "demo.dem",
+            "author": { "username": "tommyy" },
+            "embeds": [{ "title": "see", "description": "intake" }],
+            "attachments": [{ "filename": "demo.dem", "url": "https://mge.tf/demos/abc" }]
+        })];
+        let archive = archive_from_discord(&msgs);
+        assert_eq!(archive.len(), 1);
+        assert_eq!(archive[0].author, "tommyy");
+        assert_eq!(archive[0].attachments[0].filename, "demo.dem");
+        let html = transcript_html("case-cheat-1", &archive);
+        assert!(html.contains("demo.dem"));
+        assert!(html.contains("https://mge.tf/demos/abc"));
     }
 
     #[test]

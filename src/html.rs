@@ -4,6 +4,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 use crate::action::Wire;
 use crate::state::{Policy, Principal, Verdict};
+use crate::ticket::ArchivedMessage;
 use crate::types::Seat;
 use crate::view::{modal_for, Btn, FieldControl, Modal, ModalField, Target, View};
 
@@ -151,6 +152,19 @@ button.quiet { background: transparent; color: var(--ink); }
 }
 .verdict h2 { border: 0; margin-top: 0; color: var(--ok); }
 .verdict .winner { font-size: 1.35rem; margin: 0.2rem 0 0.5rem; }
+.chat { list-style: none; padding: 0; margin: 1.2rem 0 0; }
+.chat li.msg {
+  padding: 0.65rem 0;
+  border-bottom: 1px dotted var(--rule);
+}
+.chat .who { font-weight: 600; color: var(--link); }
+.chat .att { margin: 0.25rem 0 0; font-size: 0.92rem; }
+.chat .embed {
+  margin: 0.4rem 0 0;
+  padding: 0.4rem 0.7rem;
+  border-left: 4px solid var(--link);
+  background: var(--sheet);
+}
 .log { font-size: 0.82rem; }
 .log code {
   display: block;
@@ -280,7 +294,6 @@ fn cite_param(target: &Target) -> String {
             crate::links::Cite::Principal { id } => format!("person:{id}"),
             crate::links::Cite::Policy { id } => format!("policy:{id}"),
             crate::links::Cite::Log { seq } => format!("log:{seq}"),
-            crate::links::Cite::Evidence { case, id: _ } => format!("case:{case}"),
             crate::links::Cite::Note { case, .. } => format!("case:{case}"),
         },
     }
@@ -313,11 +326,6 @@ fn view_body(view: &View) -> Markup {
                     a href=(url) data-testid="discord-channel" { "Open Discord channel" }
                 }
             }
-            @if let Target::Cite(crate::links::Cite::Case { id }) = &view.target {
-                p.meta {
-                    a href=(format!("/cases/{id}/transcript")) data-testid="transcript" { "Transcript" }
-                }
-            }
             @for sec in &view.sections {
                 h2 { (sec.heading) }
                 ul.record data-testid=(sec.testid) {
@@ -338,6 +346,9 @@ fn view_body(view: &View) -> Markup {
             }
             @if let Some(v) = &view.verdict {
                 (render_verdict(v))
+            }
+            @if let Some(msgs) = &view.archive {
+                (render_archive(msgs))
             }
             (action_bar(&view.buttons, &view.target, &view.modal_ctx))
         }
@@ -407,7 +418,6 @@ fn render_dialog(modal: &Modal, case: Option<&str>) -> Markup {
     let verb = verb_of(&modal.custom_id);
     let dialog_id = match verb.as_str() {
         "case" | "open_case" => "modal-open-case",
-        "evidence" | "file_evidence" => "modal-file-evidence",
         "outcome" | "propose_outcome" => "modal-propose-outcome",
         "vote" => "modal-cast-vote",
         "respond" => "modal-respond",
@@ -426,7 +436,6 @@ fn render_dialog(modal: &Modal, case: Option<&str>) -> Markup {
                 }
                 button type="submit" data-testid=(format!("{}-submit", match verb.as_str() {
                     "case" | "open_case" => "open-case",
-                    "evidence" | "file_evidence" => "evidence",
                     "outcome" | "propose_outcome" => "outcome",
                     "vote" => "vote",
                     "respond" => "response",
@@ -462,6 +471,39 @@ fn render_field(f: &ModalField) -> Markup {
                 }
             }
         },
+    }
+}
+
+fn render_archive(msgs: &[ArchivedMessage]) -> Markup {
+    html! {
+        h2 { "Channel" }
+        @if msgs.is_empty() {
+            p.empty { "No messages were archived." }
+        } @else {
+            ol.chat data-testid="chat-archive" {
+                @for m in msgs {
+                    li.msg id=(format!("m-{}", m.id)) data-testid=(format!("chat-msg-{}", m.id)) {
+                        span.who { (m.author) }
+                        @if !m.content.is_empty() {
+                            p { (m.content) }
+                        }
+                        @for e in &m.embeds {
+                            @if e.title.is_some() || e.description.is_some() {
+                                div.embed {
+                                    @if let Some(t) = &e.title { h3 { (t) } }
+                                    @if let Some(d) = &e.description { p { (d) } }
+                                }
+                            }
+                        }
+                        @for a in &m.attachments {
+                            p.att {
+                                a href=(a.url) data-testid=(format!("chat-att-{}", m.id)) { (a.filename) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

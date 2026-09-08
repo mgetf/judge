@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{CaseId, EvidenceId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
+use crate::ids::{CaseId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
 use crate::links::Cite;
 use crate::types::{ClerkNoteKind, DecisionKind, Hearing, Phase, Seat, Ts};
 
@@ -24,15 +24,6 @@ impl Principal {
     pub fn is_voting_seat(&self) -> bool {
         self.seat.as_ref().is_some_and(Seat::may_vote) && self.weight > 0
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Evidence {
-    pub id: EvidenceId,
-    pub ts: Ts,
-    pub filed_by: PrincipalId,
-    pub label: String,
-    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +112,6 @@ pub struct Case {
     pub target_case: Option<CaseId>,
     pub recused: BTreeSet<PrincipalId>,
     pub bench: Option<BenchSnapshot>,
-    pub evidence: BTreeMap<EvidenceId, Evidence>,
     pub notified_ts: Option<Ts>,
     pub response: Option<Statement>,
     pub outcomes: BTreeMap<OutcomeId, Outcome>,

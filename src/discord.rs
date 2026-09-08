@@ -395,18 +395,50 @@ impl DiscordClient {
         &self,
         channel_id: &str,
         limit: u32,
+        before: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, DiscordError> {
+        let mut path = format!("/channels/{channel_id}/messages?limit={limit}");
+        if let Some(id) = before {
+            path.push_str("&before=");
+            path.push_str(id);
+        }
         let (status, text) = self
-            .bot_send(
-                reqwest::Method::GET,
-                &format!("/channels/{channel_id}/messages?limit={limit}"),
-                None,
-            )
+            .bot_send(reqwest::Method::GET, &path, None)
             .await?;
         if !status.is_success() {
             return Err(DiscordError::Api(format!("messages {status}: {text}")));
         }
         serde_json::from_str(&text).map_err(|e| DiscordError::Api(format!("messages json: {e}")))
+    }
+
+    /// Newest-first pages walked until the channel is empty, then oldest-first.
+    pub async fn list_all_messages(
+        &self,
+        channel_id: &str,
+    ) -> Result<Vec<serde_json::Value>, DiscordError> {
+        let mut newest_first = Vec::new();
+        let mut before: Option<String> = None;
+        loop {
+            let batch = self.list_messages(channel_id, 100, before.as_deref()).await?;
+            if batch.is_empty() {
+                break;
+            }
+            let oldest = batch
+                .last()
+                .and_then(|m| m.get("id").and_then(|v| v.as_str()))
+                .map(str::to_string);
+            let n = batch.len();
+            newest_first.extend(batch);
+            if n < 100 {
+                break;
+            }
+            match oldest {
+                Some(id) => before = Some(id),
+                None => break,
+            }
+        }
+        newest_first.reverse();
+        Ok(newest_first)
     }
 
     pub async fn overwrite_guild_commands(

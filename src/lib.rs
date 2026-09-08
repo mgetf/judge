@@ -9,8 +9,9 @@
 //!   * Franchise is a standing bench: Discord role → seat + weight (from
 //!     `config.json`), imported wholesale, snapshotted when deliberation opens.
 //!     A ballot is one outcome + a reason, counted at the voter's frozen weight.
-//!   * Hearing is opt-in. Default is a record (document + verdict). Questioning
+//!   * Hearing is opt-in. Default is a record (chat + verdict). Questioning
 //!     the subject is a special case, not the shape of every case.
+//!   * Chat is the record. Closing archives the whole ticket channel.
 //!   * AI clerks are first-class but non-sovereign: they file notes, they never
 //!     vote, and their acts are permanently marked.
 //!   * Everything that exists has a stable link path.
@@ -41,13 +42,13 @@ pub mod view;
 pub use app::{serve_judge, serve_on, AppState, JudgeOptions, JudgeServer};
 pub use config::{ConfigSeat, CourtConfig, RoleBinding};
 pub use events::{Event, RosterMember};
-pub use ids::{CaseId, EvidenceId, InvalidId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
+pub use ids::{CaseId, InvalidId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
 pub use links::{path, Cite};
 pub use mock_discord::{serve_mock_discord, MockDiscord, MockDiscordConfig, MockUser};
 pub use reducer::GovState;
 pub use scoring::{margin_of, tally, Tally};
 pub use state::{
-    Attempt, Ballot, BenchSeat, BenchSnapshot, Case, ClerkNote, Evidence, Fold, Outcome, Policy,
+    Attempt, Ballot, BenchSeat, BenchSnapshot, Case, ClerkNote, Fold, Outcome, Policy,
     PolicyVersion, Principal, Statement, Verdict,
 };
 pub use types::{rules_for, ClerkNoteKind, DecisionKind, Hearing, Phase, Reject, Rules, Seat, Ts};

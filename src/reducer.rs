@@ -4,7 +4,7 @@ use crate::events::{Event, RosterMember};
 use crate::ids::{CaseId, PrincipalId};
 use crate::scoring::{margin_of, quorum_met, tally};
 use crate::state::{
-    Attempt, Ballot, BenchSeat, BenchSnapshot, Case, ClerkNote, Evidence, Fold, Outcome, Policy,
+    Attempt, Ballot, BenchSeat, BenchSnapshot, Case, ClerkNote, Fold, Outcome, Policy,
     PolicyVersion, Principal, Statement, Verdict,
 };
 use crate::types::{response_window_ms, rules_for, DecisionKind, Hearing, Phase, Reject, Seat, Ts};
@@ -242,7 +242,6 @@ impl GovState {
                         target_case,
                         recused: BTreeSet::new(),
                         bench: None,
-                        evidence: BTreeMap::new(),
                         notified_ts: None,
                         response: None,
                         outcomes: BTreeMap::new(),
@@ -273,38 +272,6 @@ impl GovState {
                 self.sovereign(&by)?;
                 let c = self.case_in(&case, &[Phase::Intake, Phase::Noticed])?;
                 c.recused.remove(&who);
-                Ok(())
-            }
-
-            Event::EvidenceFiled {
-                ts,
-                case,
-                by,
-                id,
-                label,
-                body,
-            } => {
-                if !self.principals.contains_key(&by) {
-                    return Err(Reject::UnknownPrincipal(by));
-                }
-                if body.trim().is_empty() || label.trim().is_empty() {
-                    return Err(Reject::EmptyBody);
-                }
-                let c =
-                    self.case_in(&case, &[Phase::Intake, Phase::Noticed, Phase::Deliberation])?;
-                if c.evidence.contains_key(&id) {
-                    return Err(Reject::DuplicateEvidence(id));
-                }
-                c.evidence.insert(
-                    id.clone(),
-                    Evidence {
-                        id,
-                        ts,
-                        filed_by: by,
-                        label,
-                        body,
-                    },
-                );
                 Ok(())
             }
 

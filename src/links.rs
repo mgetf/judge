@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{CaseId, EvidenceId, NoteId, PolicyId, PrincipalId};
+use crate::ids::{CaseId, NoteId, PolicyId, PrincipalId};
 
 /// A typed pointer at something the docket can address. Clerk notes and
 /// future UI cite these instead of free-text paths.
@@ -8,7 +8,6 @@ use crate::ids::{CaseId, EvidenceId, NoteId, PolicyId, PrincipalId};
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Cite {
     Case { id: CaseId },
-    Evidence { case: CaseId, id: EvidenceId },
     Policy { id: PolicyId },
     Principal { id: PrincipalId },
     Note { case: CaseId, id: NoteId },
@@ -19,7 +18,6 @@ pub enum Cite {
 pub fn path(cite: &Cite) -> String {
     match cite {
         Cite::Case { id } => format!("/cases/{id}"),
-        Cite::Evidence { case, id } => format!("/cases/{case}#evidence-{id}"),
         Cite::Policy { id } => format!("/policies/{id}"),
         Cite::Principal { id } => format!("/people/{id}"),
         Cite::Note { case, id } => format!("/cases/{case}#note-{id}"),
@@ -49,13 +47,6 @@ mod tests {
                 id: cid("case-0007")
             }),
             "/cases/case-0007"
-        );
-        assert_eq!(
-            path(&Cite::Evidence {
-                case: cid("case-0007"),
-                id: EvidenceId::parse("demo-stv").unwrap(),
-            }),
-            "/cases/case-0007#evidence-demo-stv"
         );
         assert_eq!(
             path(&Cite::Policy {

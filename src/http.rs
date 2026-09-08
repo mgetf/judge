@@ -24,6 +24,7 @@ use crate::session::{
     OAUTH_STATE_COOKIE, SESSION_COOKIE,
 };
 use crate::state::{Fold, Principal};
+use crate::types::Phase;
 use crate::view::{see_case, see_docket, Target};
 
 pub fn router(state: AppState) -> Router {
@@ -39,7 +40,6 @@ pub fn router(state: AppState) -> Router {
         .route("/cases", post(eval))
         .route("/cases/{id}", get(show_case))
         .route("/cases/{id}/transcript", get(show_transcript))
-        .route("/cases/{id}/evidence", post(eval))
         .route("/cases/{id}/outcomes", post(eval))
         .route("/cases/{id}/notify", post(eval_notify))
         .route("/cases/{id}/respond", post(eval))
@@ -157,7 +157,15 @@ async fn see_target(
                     .get(id.as_str())
                     .map(|c| bot::channel_link(&state.config.guild_id, &c.channel_id))
             };
-            let view = see_case(who.as_ref(), case, &g.principals, notice, channel_url);
+            let finished = matches!(
+                case.phase,
+                Phase::Closed | Phase::Lapsed | Phase::Vacated
+            );
+            let mut view = see_case(who.as_ref(), case, &g.principals, notice, channel_url);
+            drop(g);
+            if finished {
+                view.archive = bot::load_archive(state, &id);
+            }
             html_ok(html::render_view(who.as_ref(), &view))
         }
         Target::Cite(_) => AppError::NotFound.into_response(),
@@ -172,8 +180,6 @@ async fn eval(
     if form.action.is_empty() {
         if !form.brief.is_empty() {
             form.action = "open_case".into();
-        } else if !form.label.is_empty() {
-            form.action = "file_evidence".into();
         } else if !form.reason.is_empty() {
             form.action = "vote".into();
         } else if !form.body.is_empty() && !form.id.is_empty() {

@@ -133,7 +133,6 @@ link_id!(PrincipalId, "principal");
 link_id!(CaseId, "case");
 link_id!(OutcomeId, "outcome");
 link_id!(PolicyId, "policy");
-link_id!(EvidenceId, "evidence");
 link_id!(NoteId, "note");
 
 #[cfg(test)]
@@ -145,7 +144,7 @@ mod tests {
         assert!(PrincipalId::parse("139512345678901234").is_ok());
         assert!(CaseId::parse("case-0007").is_ok());
         assert!(PolicyId::parse("moderation/slur-penalty").is_ok());
-        assert!(EvidenceId::parse("audit-tm-move").is_ok());
+        assert!(NoteId::parse("contradiction-1").is_ok());
     }
 
     #[test]

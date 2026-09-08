@@ -96,7 +96,6 @@ struct Message {
     content: String,
     embeds: Vec<Value>,
     components: Vec<Value>,
-    #[allow(dead_code)]
     attachments: Vec<Value>,
 }
 
@@ -365,9 +364,16 @@ async fn put_overwrite(
     StatusCode::NO_CONTENT.into_response()
 }
 
+#[derive(Deserialize)]
+struct ListMessagesQ {
+    limit: Option<u32>,
+    before: Option<String>,
+}
+
 async fn list_channel_messages(
     State(st): State<MockState>,
     Path(channel_id): Path<String>,
+    Query(q): Query<ListMessagesQ>,
     headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
     if !require_bot(&st, &headers) {
@@ -378,8 +384,15 @@ async fn list_channel_messages(
             .into_response();
     }
     let inner = st.inner.lock().unwrap();
-    let msgs = inner.messages.get(&channel_id).cloned().unwrap_or_default();
-    let rows: Vec<Value> = msgs
+    let mut msgs = inner.messages.get(&channel_id).cloned().unwrap_or_default();
+    if let Some(before) = q.before {
+        if let Some(i) = msgs.iter().position(|m| m.id == before) {
+            msgs.truncate(i);
+        }
+    }
+    let limit = q.limit.unwrap_or(50).min(100) as usize;
+    let start = msgs.len().saturating_sub(limit);
+    let rows: Vec<Value> = msgs[start..]
         .iter()
         .rev()
         .map(|m| {
@@ -389,6 +402,7 @@ async fn list_channel_messages(
                 "content": m.content,
                 "author": { "id": "bot", "username": m.author },
                 "embeds": m.embeds,
+                "attachments": m.attachments,
             })
         })
         .collect();
@@ -729,43 +743,44 @@ struct AttachForm {
     channel_id: String,
     filename: String,
     url: String,
-    label: String,
 }
 
 async fn app_attach(
     State(st): State<MockState>,
     Form(form): Form<AttachForm>,
 ) -> impl IntoResponse {
-    let payload = {
-        let inner = st.inner.lock().unwrap();
-        let Some(user) = inner.cfg.users.iter().find(|u| u.id == form.as_user) else {
-            return Redirect::to("/").into_response();
+    {
+        let mut inner = st.inner.lock().unwrap();
+        let author = inner
+            .cfg
+            .users
+            .iter()
+            .find(|u| u.id == form.as_user)
+            .map(|u| u.username.clone())
+            .unwrap_or_else(|| form.as_user.clone());
+        let id = next_id(&mut inner);
+        let filename = if form.filename.trim().is_empty() {
+            "file".into()
+        } else {
+            form.filename.clone()
         };
-        let att_id = "att-1";
-        interaction_base(&inner, user, &form.channel_id)
-            .set("type", 2)
-            .set(
-                "data",
-                serde_json::json!({
-                    "name": "evidence",
-                    "options": [
-                        { "name": "file", "type": 11, "value": att_id },
-                        { "name": "label", "type": 3, "value": form.label }
-                    ],
-                    "resolved": {
-                        "attachments": {
-                            (att_id): {
-                                "id": att_id,
-                                "filename": form.filename,
-                                "url": form.url
-                            }
-                        }
-                    }
-                }),
-            )
-            .build()
-    };
-    apply_interaction(&st, payload).await;
+        inner
+            .messages
+            .entry(form.channel_id.clone())
+            .or_default()
+            .push(Message {
+                id,
+                channel_id: form.channel_id.clone(),
+                author,
+                content: filename.clone(),
+                embeds: Vec::new(),
+                components: Vec::new(),
+                attachments: vec![serde_json::json!({
+                    "filename": filename,
+                    "url": form.url,
+                })],
+            });
+    }
     Redirect::to(&format!(
         "/app?as_user={}&channel={}",
         form.as_user, form.channel_id
@@ -1038,8 +1053,7 @@ fn render_guild(inner: &Inner, user: &MockUser, channel: Option<&str>) -> Markup
                                     input type="hidden" name="channel_id" value=(c.id);
                                     input name="filename" data-testid="attach-filename" placeholder="filename" value="demo.dem";
                                     input name="url" data-testid="attach-url" placeholder="url" value="https://mge.tf/demos/abc";
-                                    input name="label" data-testid="attach-label" placeholder="label" value="STV demo";
-                                    button type="submit" data-testid="attach-submit" { "Attach as evidence" }
+                                    button type="submit" data-testid="attach-submit" { "Attach" }
                                 }
                                 form method="post" action="/app/slash" data-testid="slash" {
                                     input type="hidden" name="as_user" value=(user.id);
@@ -1065,6 +1079,13 @@ fn render_message(m: &Message, user: &MockUser, channel_id: &str) -> Markup {
         div.msg data-testid=(format!("msg-{}", m.id)) {
             div.who { (m.author) }
             @if !m.content.is_empty() { p { (m.content) } }
+            @for a in &m.attachments {
+                @let name = a.get("filename").and_then(|v| v.as_str()).unwrap_or("file");
+                @let url = a.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                p.att {
+                    a href=(url) data-testid=(format!("att-{}", m.id)) { (name) }
+                }
+            }
             @for e in &m.embeds {
                 (render_embed(e))
             }
@@ -1099,7 +1120,6 @@ fn testid_for_custom_id(custom_id: &str, label: &str) -> String {
     match crate::action::Wire::parse(custom_id) {
         Ok(crate::action::Wire::Ask { verb, .. }) => match verb.as_str() {
             "case" | "open_case" => "open-case".into(),
-            "evidence" | "file_evidence" => "file-evidence".into(),
             "outcome" | "propose_outcome" => "propose-outcome".into(),
             "vote" => "cast-vote".into(),
             "respond" => "respond".into(),
@@ -1143,13 +1163,6 @@ fn render_embed(e: &Value) -> Markup {
                     } @else {
                         (value)
                     }
-                    @if testid == "evidence-list" {
-                        @for line in value.lines() {
-                            @if let Some(id) = line.split_whitespace().next().and_then(|s| s.strip_prefix("• ")) {
-                                span data-testid=(format!("evidence-{id}")) { "" }
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -1167,8 +1180,6 @@ fn embed_field_testid(name: &str, value: &str) -> &'static str {
         )
     {
         "case-phase"
-    } else if n.contains("evidence") {
-        "evidence-list"
     } else if n.contains("outcome") {
         "outcome-list"
     } else if n.contains("ballot") {
@@ -1239,9 +1250,6 @@ fn modal_field_testid(verb: &str, fid: &str) -> &'static str {
         (_, "subject") => "case-subject",
         (_, "target_case") => "case-target",
         (_, "brief") => "case-brief",
-        ("evidence" | "file_evidence", "id") => "evidence-id",
-        (_, "label") => "evidence-label",
-        ("evidence" | "file_evidence", "body") => "evidence-body",
         ("outcome" | "propose_outcome", "id") => "outcome-id",
         ("outcome" | "propose_outcome", "body") => "outcome-body",
         ("respond", "body") => "response-body",
@@ -1256,7 +1264,6 @@ fn modal_submit_testid(custom_id: &str) -> &'static str {
     match crate::action::Wire::parse(custom_id) {
         Ok(crate::action::Wire::Do { verb, .. }) => match verb.as_str() {
             "case" | "open_case" => "open-case-submit",
-            "evidence" | "file_evidence" => "evidence-submit",
             "outcome" | "propose_outcome" => "outcome-submit",
             "vote" => "vote-submit",
             "respond" => "response-submit",

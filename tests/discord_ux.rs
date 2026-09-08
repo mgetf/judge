@@ -127,35 +127,14 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         .unwrap();
     let case_ch = channel_id_from_html(&guild, "case-cheat-1").expect("case channel id");
 
-    let evidence = json!({
-        "type": 2,
-        "channel_id": case_ch,
-        "guild_id": "000000000000000000",
-        "member": {
-            "roles": ["111111111111111111"],
-            "user": { "id": "100", "username": "tommyy", "global_name": "tommyy" }
-        },
-        "data": {
-            "name": "evidence",
-            "options": [
-                { "name": "file", "type": 11, "value": "att-1" },
-                { "name": "label", "type": 3, "value": "STV demo" },
-                { "name": "id", "type": 3, "value": "demo-stv" }
-            ],
-            "resolved": {
-                "attachments": {
-                    "att-1": {
-                        "id": "att-1",
-                        "filename": "demo.dem",
-                        "url": "https://mge.tf/demos/abc"
-                    }
-                }
-            }
-        }
-    });
     assert!(client
-        .post(format!("{}/discord/interactions", stack.judge_url))
-        .json(&evidence)
+        .post(format!("{}/app/attach", stack.mock.base_url))
+        .form(&[
+            ("as_user", "100"),
+            ("channel_id", case_ch.as_str()),
+            ("filename", "demo.dem"),
+            ("url", "https://mge.tf/demos/abc"),
+        ])
         .send()
         .await
         .unwrap()
@@ -323,20 +302,26 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
         .unwrap();
     assert!(case_page.contains("data-testid=\"verdict\""), "{case_page}");
     assert!(case_page.contains("cheat-ban"), "{case_page}");
-    assert!(
-        case_page.contains("data-testid=\"evidence-demo-stv\""),
-        "{case_page}"
-    );
-    assert!(
-        case_page.contains("https://mge.tf/demos/abc"),
-        "{case_page}"
-    );
-    assert!(
-        case_page.contains("/cases/case-cheat-1/transcript"),
-        "{case_page}"
-    );
 
     wait_channel(&stack, "closed-case-cheat-1").await;
+
+    let mut archived = None;
+    for _ in 0..100 {
+        let resp = client
+            .get(format!("{}/cases/case-cheat-1", stack.judge_url))
+            .send()
+            .await
+            .unwrap();
+        let html = resp.text().await.unwrap();
+        if html.contains("data-testid=\"chat-archive\"") && html.contains("demo.dem") {
+            archived = Some(html);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let html = archived.expect("closed case shows the archived channel");
+    assert!(html.contains("https://mge.tf/demos/abc"), "{html}");
+    assert!(!html.contains("data-testid=\"evidence-"), "{html}");
 
     let mut transcript = None;
     for _ in 0..100 {
@@ -353,6 +338,7 @@ async fn case_channel_is_the_chat_and_view_live_updates() {
     }
     let html = transcript.expect("transcript saved after close");
     assert!(html.contains("Transcript case-cheat-1"), "{html}");
+    assert!(html.contains("demo.dem"), "{html}");
 
     stack.abort();
 }

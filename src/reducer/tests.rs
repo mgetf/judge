@@ -1,5 +1,5 @@
 use crate::events::{Event, RosterMember};
-use crate::ids::{CaseId, EvidenceId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
+use crate::ids::{CaseId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
 use crate::links::Cite;
 use crate::reducer::GovState;
 use crate::state::Fold;
@@ -13,9 +13,6 @@ fn cid(s: &str) -> CaseId {
 }
 fn oid(s: &str) -> OutcomeId {
     OutcomeId::parse(s).unwrap()
-}
-fn eid(s: &str) -> EvidenceId {
-    EvidenceId::parse(s).unwrap()
 }
 fn nid(s: &str) -> NoteId {
     NoteId::parse(s).unwrap()
@@ -86,18 +83,6 @@ fn propose(s: &mut GovState, case: &str, id: &str, body: &str, policy: Option<&s
     .unwrap();
 }
 
-fn evidence(s: &mut GovState, case: &str, id: &str, body: &str) {
-    s.apply(Event::EvidenceFiled {
-        ts: 2,
-        case: cid(case),
-        by: pid("abood"),
-        id: eid(id),
-        label: id.into(),
-        body: body.into(),
-    })
-    .unwrap();
-}
-
 fn deliberate(s: &mut GovState, case: &str, ts: Ts) {
     s.apply(Event::DeliberationOpened {
         ts,
@@ -143,12 +128,6 @@ fn record_cheat_case_skips_hearing_and_freezes_verdict() {
         None,
     );
     assert!(s.principals.contains_key(&pid("76561198000000000")));
-    evidence(
-        &mut s,
-        "case-cheat",
-        "demo-stv",
-        "https://mge.tf/demos/abc STV: aim snap at 3:12",
-    );
     propose(
         &mut s,
         "case-cheat",
@@ -189,13 +168,6 @@ fn record_cheat_case_skips_hearing_and_freezes_verdict() {
             id: cid("case-cheat")
         }),
         "/cases/case-cheat"
-    );
-    assert_eq!(
-        crate::links::path(&Cite::Evidence {
-            case: cid("case-cheat"),
-            id: eid("demo-stv"),
-        }),
-        "/cases/case-cheat#evidence-demo-stv"
     );
 }
 
@@ -348,13 +320,6 @@ fn personnel_hearing_full_lifecycle_weighted_votes() {
         Some("ricochet"),
         None,
     );
-    evidence(&mut s, "case-0007", "audit-tm-move", "Site audit log link");
-    evidence(
-        &mut s,
-        "case-0007",
-        "msg-deletion",
-        "Discord audit screenshot",
-    );
     for (id, body) in [
         ("demote", "Remove all mod/admin roles"),
         ("warn", "Formal warning"),
@@ -382,9 +347,8 @@ fn personnel_hearing_full_lifecycle_weighted_votes() {
         id: nid("contradiction-1"),
         kind: ClerkNoteKind::Contradiction,
         body: "Response conflicts with audit-tm-move.".into(),
-        cites: vec![Cite::Evidence {
-            case: cid("case-0007"),
-            id: eid("audit-tm-move"),
+        cites: vec![Cite::Case {
+            id: cid("case-0007"),
         }],
     })
     .unwrap();
@@ -433,7 +397,7 @@ fn personnel_hearing_full_lifecycle_weighted_votes() {
     assert_eq!(v.distinct_voters, 3);
     assert_eq!(
         c.clerk_notes[&nid("contradiction-1")].cites[0].path(),
-        "/cases/case-0007#evidence-audit-tm-move"
+        "/cases/case-0007"
     );
 
     let err = s
@@ -986,19 +950,6 @@ fn duplicate_ids_are_rejected() {
         })
         .unwrap_err(),
         Reject::DuplicateOutcome(_)
-    ));
-    evidence(&mut s, "case-d", "e1", "body");
-    assert!(matches!(
-        s.apply(Event::EvidenceFiled {
-            ts: 4,
-            case: cid("case-d"),
-            by: pid("abood"),
-            id: eid("e1"),
-            label: "e1".into(),
-            body: "again".into(),
-        })
-        .unwrap_err(),
-        Reject::DuplicateEvidence(_)
     ));
 }
 

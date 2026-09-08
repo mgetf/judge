@@ -14,6 +14,7 @@ pub enum Target {
     Cite(Cite),
 }
 use crate::state::{Case, Principal, Verdict};
+use crate::ticket::ArchivedMessage;
 use crate::types::{Hearing, Phase, Seat};
 
 #[derive(Debug, Clone)]
@@ -99,6 +100,8 @@ pub struct View {
     pub notice: Option<String>,
     pub channel_url: Option<String>,
     pub modal_ctx: ModalCtx,
+    /// Frozen Discord chat. Present after the ticket is archived.
+    pub archive: Option<Vec<ArchivedMessage>>,
 }
 
 fn name_of(people: &HashMap<PrincipalId, Principal>, id: &PrincipalId) -> String {
@@ -182,6 +185,7 @@ pub fn see_docket(
         notice: notice.map(str::to_string),
         channel_url,
         modal_ctx: ModalCtx::default(),
+        archive: None,
     }
 }
 
@@ -206,27 +210,6 @@ pub fn see_case(
         .map(|id| name_of(people, id))
         .unwrap_or_else(|| "—".into());
 
-    let evidence = Section {
-        heading: "Evidence".into(),
-        testid: "evidence-list".into(),
-        items: case
-            .evidence
-            .values()
-            .map(|e| SectionItem {
-                id: e.id.to_string(),
-                testid: format!("evidence-{}", e.id),
-                text: format!(
-                    "{} — {} — {} · by {}",
-                    e.id,
-                    e.label,
-                    e.body,
-                    name_of(people, &e.filed_by)
-                ),
-                href: None,
-            })
-            .collect(),
-        empty: "None filed. Drop an attachment in the case channel or use File evidence.",
-    };
     let outcomes = Section {
         heading: "Outcomes".into(),
         testid: "outcome-list".into(),
@@ -290,7 +273,7 @@ pub fn see_case(
             },
         ],
         meta: vec![format!("Subject: {subject}")],
-        sections: vec![evidence, outcomes, ballots],
+        sections: vec![outcomes, ballots],
         verdict: case.verdict.clone(),
         buttons: case_buttons(case, seated, on_bench, is_subject),
         notice: notice.map(str::to_string),
@@ -310,26 +293,14 @@ pub fn see_case(
                 })
                 .collect(),
         },
+        archive: None,
     }
 }
 
 fn case_buttons(case: &Case, seated: bool, on_bench: bool, is_subject: bool) -> Vec<Btn> {
-    let live = matches!(
-        case.phase,
-        Phase::Intake | Phase::Noticed | Phase::Deliberation
-    );
     let proposing = matches!(case.phase, Phase::Intake | Phase::Noticed);
     let cid = case.id.as_str();
     let mut out = Vec::new();
-    if seated && live {
-        out.push(Btn {
-            custom_id: Wire::custom_id("ask", "evidence", Some(cid)),
-            label: "File evidence".into(),
-            testid: "file-evidence".into(),
-            style: 2,
-            opens_modal: true,
-        });
-    }
     if seated && proposing {
         out.push(Btn {
             custom_id: Wire::custom_id("ask", "outcome", Some(cid)),
@@ -416,29 +387,6 @@ pub fn modal_for(verb: &str, case: Option<&str>, ctx: &ModalCtx) -> Result<Modal
                     false,
                     FieldControl::Paragraph,
                     "Optional. Defaults to the title.",
-                ),
-            ],
-        }),
-        "evidence" | "file_evidence" => Ok(Modal {
-            custom_id: do_id,
-            title: "File evidence".into(),
-            testid: "file-evidence-modal".into(),
-            fields: vec![
-                field(
-                    "label",
-                    "Label",
-                    "evidence-label",
-                    true,
-                    FieldControl::Line,
-                    "STV demo",
-                ),
-                field(
-                    "body",
-                    "Attachment URL or notes",
-                    "evidence-body",
-                    true,
-                    FieldControl::Paragraph,
-                    "Discord attachment URL",
                 ),
             ],
         }),

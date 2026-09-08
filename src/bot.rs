@@ -1,6 +1,6 @@
 //! Discord is the court. Each case is a Ticket Tool-shaped ticket: private
-//! channel, pinned live `see`, two-step close, closed category, transcript.
-//! Chat and attachments stay in Discord.
+//! channel, pinned live `see`, two-step close, closed category, full-chat
+//! archive. Chat and attachments stay in Discord until close.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -15,8 +15,8 @@ use crate::events::Event;
 use crate::ids::{CaseId, PrincipalId};
 use crate::state::Principal;
 use crate::ticket::{
-    close_ask, closed_channel_name, closed_overwrites, opened_overwrites, transcript_html, TALK,
-    VIEW_CHANNEL,
+    archive_from_discord, close_ask, closed_channel_name, closed_overwrites, opened_overwrites,
+    transcript_html, ArchivedMessage, TALK, VIEW_CHANNEL,
 };
 use crate::view::{
     case_channel_name, discord_modal, discord_payload, modal_for, see_case, see_docket, ModalCtx,
@@ -80,15 +80,6 @@ pub fn guild_commands() -> Vec<Value> {
                 { "name": "hearing", "description": "none or required", "type": 3, "required": false },
                 { "name": "subject", "description": "Subject id", "type": 3, "required": false },
                 { "name": "target", "description": "Appeal target", "type": 3, "required": false }
-            ]
-        }),
-        serde_json::json!({
-            "name": "evidence",
-            "description": "File an attachment as evidence in this case channel",
-            "options": [
-                { "name": "file", "description": "Attachment", "type": 11, "required": true },
-                { "name": "label", "description": "Label", "type": 3, "required": true },
-                { "name": "id", "description": "Evidence id (defaults to filename)", "type": 3, "required": false }
             ]
         }),
         serde_json::json!({
@@ -171,8 +162,7 @@ pub async fn after_commit(state: &AppState, ev: &Event) -> Result<(), AppError> 
             refresh_case(state, id).await?;
             refresh_docket(state).await?;
         }
-        Event::EvidenceFiled { case, .. }
-        | Event::SubjectNotified { case, .. }
+        Event::SubjectNotified { case, .. }
         | Event::ResponseFiled { case, .. }
         | Event::OutcomeProposed { case, .. }
         | Event::DeliberationOpened { case, .. }
@@ -551,17 +541,6 @@ async fn handle_command(
             fields.insert("case".into(), c);
         }
     }
-    if name == "evidence" {
-        if let Some((id, url, filename)) = resolved_attachment(body) {
-            fields.entry("body".into()).or_insert(url);
-            fields
-                .entry("id".into())
-                .or_insert_with(|| slug_id(&filename).or_else(|| slug_id(&id)).unwrap_or(id));
-            if !fields.contains_key("label") {
-                fields.insert("label".into(), filename);
-            }
-        }
-    }
     if name == "case" {
         if let Some(t) = fields.remove("target") {
             fields.insert("target_case".into(), t);
@@ -699,49 +678,6 @@ fn command_values(body: &Value) -> BTreeMap<String, String> {
     out
 }
 
-fn resolved_attachment(body: &Value) -> Option<(String, String, String)> {
-    let file_id = body
-        .pointer("/data/options")
-        .and_then(|v| v.as_array())
-        .and_then(|opts| {
-            opts.iter().find_map(|o| {
-                if o.get("name").and_then(|v| v.as_str()) == Some("file") {
-                    o.get("value").and_then(|v| v.as_str()).map(str::to_string)
-                } else {
-                    None
-                }
-            })
-        })?;
-    let att = body.pointer(&format!("/data/resolved/attachments/{file_id}"))?;
-    let url = att.get("url").and_then(|v| v.as_str())?.to_string();
-    let filename = att
-        .get("filename")
-        .and_then(|v| v.as_str())
-        .unwrap_or("file")
-        .to_string();
-    Some((file_id, url, filename))
-}
-
-fn slug_id(s: &str) -> Option<String> {
-    let slug: String = s
-        .chars()
-        .map(|c| match c {
-            'A'..='Z' => c.to_ascii_lowercase(),
-            'a'..='z' | '0'..='9' | '-' | '_' => c,
-            '.' => '-',
-            _ => '-',
-        })
-        .collect();
-    let slug = slug.trim_matches('-').to_string();
-    if slug.is_empty() {
-        None
-    } else {
-        crate::ids::EvidenceId::parse(&slug)
-            .ok()
-            .map(|e| e.to_string())
-    }
-}
-
 async fn archive_ticket(state: &AppState, id: &CaseId) -> Result<(), AppError> {
     let bind = {
         let b = state.bindings.read().await;
@@ -846,12 +782,24 @@ async fn apply_docket_privacy(state: &AppState) -> Result<(), AppError> {
 }
 
 pub fn transcript_file(state: &AppState, id: &CaseId) -> PathBuf {
+    archive_dir(state).join(format!("{id}.html"))
+}
+
+pub fn archive_json_file(state: &AppState, id: &CaseId) -> PathBuf {
+    archive_dir(state).join(format!("{id}.json"))
+}
+
+fn archive_dir(state: &AppState) -> PathBuf {
     state
         .bindings_path
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join("transcripts")
-        .join(format!("{id}.html"))
+}
+
+pub fn load_archive(state: &AppState, id: &CaseId) -> Option<Vec<ArchivedMessage>> {
+    let raw = std::fs::read_to_string(archive_json_file(state, id)).ok()?;
+    serde_json::from_str(&raw).ok()
 }
 
 pub async fn save_transcript(state: &AppState, id: &CaseId) -> Result<String, AppError> {
@@ -862,16 +810,19 @@ pub async fn save_transcript(state: &AppState, id: &CaseId) -> Result<String, Ap
     .ok_or(AppError::NotFound)?;
     let msgs = state
         .discord
-        .list_messages(&bind.channel_id, 100)
+        .list_all_messages(&bind.channel_id)
         .await
         .map_err(|e| AppError::Discord(e.to_string()))?;
-    let html = transcript_html(id.as_str(), &msgs);
-    let path = transcript_file(state, id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| AppError::BadRequest(format!("transcript dir: {e}")))?;
-    }
-    std::fs::write(&path, html)
+    let archive = archive_from_discord(&msgs);
+    let html = transcript_html(id.as_str(), &archive);
+    let dir = archive_dir(state);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| AppError::BadRequest(format!("transcript dir: {e}")))?;
+    let json = serde_json::to_string_pretty(&archive)
+        .map_err(|e| AppError::BadRequest(format!("archive json: {e}")))?;
+    std::fs::write(archive_json_file(state, id), json)
+        .map_err(|e| AppError::BadRequest(format!("archive write: {e}")))?;
+    std::fs::write(transcript_file(state, id), html)
         .map_err(|e| AppError::BadRequest(format!("transcript write: {e}")))?;
     Ok(format!(
         "{}/cases/{id}/transcript",
