@@ -2,3 +2,6 @@
 /data
 /screenshots
 repomix-output.xml
+
+# live court data (never commit)
+events.live.jsonl*
