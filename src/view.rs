@@ -396,6 +396,14 @@ pub fn modal_for(verb: &str, case: Option<&str>, ctx: &ModalCtx) -> Result<Modal
             testid: "propose-outcome-modal".into(),
             fields: vec![
                 field(
+                    "id",
+                    "Outcome id",
+                    "outcome-id",
+                    true,
+                    FieldControl::Line,
+                    "yes-enforce",
+                ),
+                field(
                     "body",
                     "Outcome",
                     "outcome-body",

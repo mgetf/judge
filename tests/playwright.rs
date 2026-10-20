@@ -93,6 +93,10 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .click(None)
         .await
         .unwrap();
+    page.locator("[data-testid=modal] [data-testid=outcome-id]")
+        .fill("permanent-cheat-ban", None)
+        .await
+        .unwrap();
     page.locator("[data-testid=modal] [data-testid=outcome-body]")
         .fill("Permanent cheat ban", None)
         .await
@@ -104,6 +108,10 @@ async fn chief_records_a_cheat_verdict_in_discord() {
 
     page.locator("[data-testid=propose-outcome]")
         .click(None)
+        .await
+        .unwrap();
+    page.locator("[data-testid=modal] [data-testid=outcome-id]")
+        .fill("not-convinced", None)
         .await
         .unwrap();
     page.locator("[data-testid=modal] [data-testid=outcome-body]")

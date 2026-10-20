@@ -216,10 +216,13 @@ pub fn parse_action(verb: &str, fields: &BTreeMap<String, String>) -> Result<Act
         }
         "propose_outcome" | "outcome" => {
             let body = get("body");
-            let seed = opt("id")
-                .or_else(|| (!body.is_empty()).then_some(body.clone()))
-                .ok_or_else(|| "describe the outcome".to_string())?;
-            let slug = slugify(&seed);
+            if body.is_empty() {
+                return Err("describe the outcome".to_string());
+            }
+            // Never auto-slug from body: the proposer names the outcome.
+            // The modal requires `id`; the slash command takes it outright.
+            let raw = opt("id").ok_or_else(|| "give the outcome a short id".to_string())?;
+            let slug = slugify(&raw);
             Ok(Action::ProposeOutcome {
                 case: CaseId::parse(get("case")).map_err(|e| e.to_string())?,
                 id: OutcomeId::parse(&slug).map_err(|e| e.to_string())?,
@@ -288,6 +291,33 @@ impl Wire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fields(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn outcome_requires_short_id_never_autoslugs_body() {
+        // The proposer names the outcome. A missing id is rejected even
+        // when the body is present — never slugify the body into an id.
+        let err = parse_action(
+            "outcome",
+            &fields(&[("case", "case-x"), ("body", "Yes enforce all demos everywhere")]),
+        )
+        .unwrap_err();
+        assert_eq!(err, "give the outcome a short id");
+        // A provided id is honored verbatim (slugified, not body-derived).
+        let a = parse_action(
+            "outcome",
+            &fields(&[
+                ("case", "case-x"),
+                ("id", "yes-enforce"),
+                ("body", "Yes enforce all demos everywhere"),
+            ]),
+        )
+        .unwrap();
+        assert!(matches!(a, Action::ProposeOutcome { id, .. } if id.as_str() == "yes-enforce"));
+    }
 
     #[test]
     fn form_open_case() {
