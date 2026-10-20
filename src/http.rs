@@ -77,8 +77,8 @@ fn redirect_with_session(
 ) -> Response {
     let cookie = session::set_cookie(
         SESSION_COOKIE,
-        &encode(secret, principal.as_str()),
-        60 * 60 * 24 * 30,
+        &encode(secret, &session::session_value(principal, now_ms())),
+        session::SESSION_TTL_MS / 1000,
         secure,
     );
     (
@@ -123,7 +123,10 @@ async fn see_target(
     target: Target,
     notice: Option<&str>,
 ) -> Response {
-    let who = viewer(state, headers).await;
+    let who = match require_court(state, headers).await {
+        Ok(p) => Some(p),
+        Err(r) => return r,
+    };
     match target {
         Target::Docket => {
             let mut view = current_docket_view(state, notice).await;
@@ -157,10 +160,7 @@ async fn see_target(
                     .get(id.as_str())
                     .map(|c| bot::channel_link(&state.config.guild_id, &c.channel_id))
             };
-            let finished = matches!(
-                case.phase,
-                Phase::Closed | Phase::Lapsed | Phase::Vacated
-            );
+            let finished = matches!(case.phase, Phase::Closed | Phase::Lapsed | Phase::Vacated);
             let mut view = see_case(who.as_ref(), case, &g.principals, notice, channel_url);
             drop(g);
             if finished {
@@ -258,14 +258,15 @@ async fn eval_form(state: &AppState, headers: &HeaderMap, form: EvalForm) -> Res
     }
 }
 
-async fn live(
-    State(state): State<AppState>,
-) -> Sse<impl futures_util::Stream<Item = Result<SseEvent, Infallible>>> {
+async fn live(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Err(r) = require_court(&state, &headers).await {
+        return r;
+    }
     let rx = state.live.subscribe();
     let stream = unfold(rx, |mut rx| async move {
         match rx.recv().await {
             Ok(seq) => Some((
-                Ok(SseEvent::default().event("commit").data(seq.to_string())),
+                Ok::<_, Infallible>(SseEvent::default().event("commit").data(seq.to_string())),
                 rx,
             )),
             Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
@@ -274,7 +275,9 @@ async fn live(
             }
         }
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 async fn discord_interactions(
@@ -397,6 +400,30 @@ async fn oauth_callback(
     redirect_with_session("/", &state.session_secret, &pid, state.secure_cookies())
 }
 
+/// Court records (docket, cases, archived ticket chat, transcripts, people,
+/// policies, the raw log) mirror private Discord channels, so the web app
+/// shows them only to people seated on the court.
+async fn require_court(state: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
+    let Some(who) = viewer(state, headers).await else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            html::login_required("Log in with Discord to see the court."),
+        )
+            .into_response());
+    };
+    if who.seat.is_none() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            html::flash_page(
+                Some(&who),
+                "Court records are visible to seated members only.",
+            ),
+        )
+            .into_response());
+    }
+    Ok(who)
+}
+
 async fn require_viewer(state: &AppState, headers: &HeaderMap) -> Result<Principal, Response> {
     viewer(state, headers)
         .await
@@ -425,7 +452,10 @@ async fn show_person(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let who = viewer(&state, &headers).await;
+    let who = match require_court(&state, &headers).await {
+        Ok(p) => Some(p),
+        Err(r) => return r,
+    };
     let Ok(pid) = PrincipalId::parse(&id) else {
         return AppError::NotFound.into_response();
     };
@@ -441,7 +471,10 @@ async fn show_policy(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Response {
-    let who = viewer(&state, &headers).await;
+    let who = match require_court(&state, &headers).await {
+        Ok(p) => Some(p),
+        Err(r) => return r,
+    };
     let Ok(pid) = PolicyId::parse(&id) else {
         return AppError::NotFound.into_response();
     };
@@ -452,7 +485,14 @@ async fn show_policy(
     html_ok(html::policy_page(who.as_ref(), p))
 }
 
-async fn show_transcript(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+async fn show_transcript(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    if let Err(r) = require_court(&state, &headers).await {
+        return r;
+    }
     let Ok(cid) = CaseId::parse(&id) else {
         return AppError::NotFound.into_response();
     };
@@ -469,7 +509,10 @@ async fn show_transcript(State(state): State<AppState>, Path(id): Path<String>) 
 }
 
 async fn show_log(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let who = viewer(&state, &headers).await;
+    let who = match require_court(&state, &headers).await {
+        Ok(p) => Some(p),
+        Err(r) => return r,
+    };
     let g = state.gov.read().await;
     let lines: Vec<_> = g
         .attempts

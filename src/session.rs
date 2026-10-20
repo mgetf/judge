@@ -64,10 +64,28 @@ pub fn cookie_from_headers(headers: &HeaderMap, name: &str) -> Option<String> {
     None
 }
 
+/// How long a login lasts. The expiry is inside the signed value, so a copied
+/// cookie stops working on schedule even if the browser ignores `Max-Age`.
+pub const SESSION_TTL_MS: i64 = 30 * 24 * 3_600_000;
+
+/// Signed session value: `{principal}|{expires_ms}`.
+pub fn session_value(principal: &PrincipalId, now_ms: i64) -> String {
+    format!("{}|{}", principal.as_str(), now_ms + SESSION_TTL_MS)
+}
+
+pub fn principal_from_session(value: &str, now_ms: i64) -> Option<PrincipalId> {
+    let (id, exp) = value.rsplit_once('|')?;
+    let exp: i64 = exp.parse().ok()?;
+    if now_ms >= exp {
+        return None;
+    }
+    PrincipalId::parse(id).ok()
+}
+
 pub fn principal_from_headers(headers: &HeaderMap, secret: &str) -> Option<PrincipalId> {
     let raw = cookie_from_headers(headers, SESSION_COOKIE)?;
-    let id = decode(secret, &raw)?;
-    PrincipalId::parse(id).ok()
+    let value = decode(secret, &raw)?;
+    principal_from_session(&value, crate::clock::now_ms())
 }
 
 pub fn random_state() -> String {
@@ -87,5 +105,15 @@ mod tests {
         assert_eq!(decode("secret", &c).as_deref(), Some("100"));
         assert!(decode("other", &c).is_none());
         assert!(decode("secret", "100.deadbeef").is_none());
+    }
+
+    #[test]
+    fn sessions_expire() {
+        let p = PrincipalId::parse("100").unwrap();
+        let v = session_value(&p, 1_000);
+        assert_eq!(principal_from_session(&v, 1_000), Some(p.clone()));
+        assert_eq!(principal_from_session(&v, 1_000 + SESSION_TTL_MS), None);
+        // Pre-expiry cookies (bare principal id) no longer log anyone in.
+        assert_eq!(principal_from_session("100", 1_000), None);
     }
 }

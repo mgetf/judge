@@ -61,6 +61,20 @@ async fn mock_discord_oauth_and_roster() {
     assert!(members.iter().any(|m| m.user.username == "tommyy"));
     assert!(members.iter().any(|m| m.user.username == "abood"));
 
+    // Court records are private to the bench: logged out sees a login wall.
+    let anon = client.get(&stack.judge_url).send().await.unwrap();
+    assert_eq!(anon.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert!(!anon.text().await.unwrap().contains("data-testid=\"bench\""));
+    for path in ["/log", "/cases/anything/transcript", "/see?cite=docket"] {
+        let r = client
+            .get(format!("{}{path}", stack.judge_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), reqwest::StatusCode::UNAUTHORIZED, "{path}");
+    }
+
+    let client = common::login(&stack, "100").await.expect("login");
     let home = client
         .get(&stack.judge_url)
         .send()

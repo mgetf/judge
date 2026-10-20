@@ -173,6 +173,18 @@ async fn chief_records_a_cheat_verdict_in_discord() {
         .await
         .expect("closed ticket rename");
 
+    // The web mirror is private to the bench: log in with Discord first.
+    page.goto(&format!("{}/login", stack.judge_url), None)
+        .await
+        .expect("goto login");
+    page.locator("[data-testid=continue-tommyy]")
+        .click(None)
+        .await
+        .expect("continue as tommyy");
+    expect(page.locator("[data-testid=bench]"))
+        .to_be_visible()
+        .await
+        .expect("logged-in docket");
     page.goto(&format!("{}/cases/case-cheat-1", stack.judge_url), None)
         .await
         .expect("goto closed case");

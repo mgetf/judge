@@ -3,7 +3,9 @@ use crate::ids::{CaseId, NoteId, OutcomeId, PolicyId, PrincipalId, Weight};
 use crate::links::Cite;
 use crate::reducer::GovState;
 use crate::state::Fold;
-use crate::types::{ClerkNoteKind, DecisionKind, Hearing, Phase, Reject, Seat, Ts};
+use crate::types::{
+    ClerkNoteKind, DecisionKind, Hearing, Phase, Reject, Seat, Ts, DELIBERATION_WINDOW_MS,
+};
 
 fn pid(s: &str) -> PrincipalId {
     PrincipalId::parse(s).unwrap()
@@ -108,6 +110,7 @@ fn close(s: &mut GovState, case: &str) -> Result<(), Reject> {
         ts: 20,
         case: cid(case),
         by: pid("tommyy"),
+        constitution: crate::events::CONSTITUTION,
     })
 }
 
@@ -717,7 +720,7 @@ fn close_without_quorum_lapses() {
     propose(&mut s, "case-q", "no", "no", None);
     deliberate(&mut s, "case-q", 3);
     vote(&mut s, "case-q", "abood", "yes", "only one justice"); // weight 1
-    close(&mut s, "case-q").unwrap();
+    close_at(&mut s, "case-q", 3 + DELIBERATION_WINDOW_MS).unwrap();
     assert_eq!(s.cases[&cid("case-q")].phase, Phase::Lapsed);
     assert!(s.cases[&cid("case-q")].verdict.is_none());
 }
@@ -883,6 +886,92 @@ fn policy_case_enacts_precedent_and_appeal_can_vacate() {
 
     assert_eq!(s.cases[&cid("case-0008")].phase, Phase::Vacated);
     assert!(s.cases[&cid("case-0008")].verdict.is_some());
+    // The vacated verdict's enactment goes with it.
+    let p = &s.policies[&pol("moderation/slur-penalty")];
+    assert!(p.versions.is_empty());
+    assert!(p.repealed);
+}
+
+fn close_at(s: &mut GovState, case: &str, ts: Ts) -> Result<(), Reject> {
+    s.apply(Event::CaseClosed {
+        ts,
+        case: cid(case),
+        by: pid("abood"),
+        constitution: crate::events::CONSTITUTION,
+    })
+}
+
+fn quorumless_case(s: &mut GovState) {
+    sync(s, bench3()); // sitting 5, need 2.5
+    open(s, "case-q", DecisionKind::Record, Hearing::None, None, None);
+    propose(s, "case-q", "yes", "yes", None);
+    propose(s, "case-q", "no", "no", None);
+    deliberate(s, "case-q", 3);
+    vote(s, "case-q", "abood", "yes", "weight 1 of 5");
+}
+
+#[test]
+fn one_justice_cannot_lapse_a_case_early() {
+    let mut s = GovState::new();
+    quorumless_case(&mut s);
+    assert_eq!(
+        close_at(&mut s, "case-q", 4).unwrap_err(),
+        Reject::TooEarlyToClose {
+            opens_at: 3 + DELIBERATION_WINDOW_MS
+        }
+    );
+    assert_eq!(s.cases[&cid("case-q")].phase, Phase::Deliberation);
+    // Once quorum is in, the case may close at once.
+    vote(&mut s, "case-q", "tommyy", "yes", "chief agrees");
+    close_at(&mut s, "case-q", 5).unwrap();
+    assert_eq!(s.cases[&cid("case-q")].phase, Phase::Closed);
+}
+
+#[test]
+fn legacy_closes_replay_under_the_old_rule() {
+    let mut s = GovState::new();
+    quorumless_case(&mut s);
+    // A close written before constitution 2 has no field and reads as 1.
+    let ev: Event = serde_json::from_value(serde_json::json!({
+        "type": "case_closed", "ts": 4, "case": "case-q", "by": "abood"
+    }))
+    .unwrap();
+    s.replay_accepted(ev).unwrap();
+    assert_eq!(s.cases[&cid("case-q")].phase, Phase::Lapsed);
+}
+
+#[test]
+fn citations_need_a_seat_and_a_real_policy() {
+    let mut s = GovState::new();
+    sync(&mut s, bench3());
+    open(
+        &mut s,
+        "case-c",
+        DecisionKind::Routine,
+        Hearing::None,
+        None,
+        None,
+    );
+    let cite = |by: &str, policy: &str| Event::PolicyCited {
+        ts: 5,
+        case: cid("case-c"),
+        by: pid(by),
+        policy: pol(policy),
+    };
+    assert_eq!(
+        s.apply(cite("abood", "nope/none")).unwrap_err(),
+        Reject::UnknownPolicy(pol("nope/none"))
+    );
+    s.apply(Event::PrincipalSeen {
+        ts: 5,
+        id: pid("rando"),
+        display_name: "rando".into(),
+    })
+    .unwrap();
+    assert_eq!(
+        s.apply(cite("rando", "nope/none")).unwrap_err(),
+        Reject::NotSeated(pid("rando"))
+    );
 }
 
 #[test]

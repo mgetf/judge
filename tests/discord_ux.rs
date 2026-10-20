@@ -13,16 +13,13 @@ async fn wait_channel(stack: &common::Stack, name: &str) {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    panic!(
-        "missing channel {name}: {:?}",
-        stack.mock.channel_names()
-    );
+    panic!("missing channel {name}: {:?}", stack.mock.channel_names());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn case_channel_is_the_chat_and_view_live_updates() {
     let stack = common::start_stack().await.expect("stack");
-    let client = reqwest::Client::new();
+    let client = common::login(&stack, "100").await.expect("login as chief");
 
     let home = client
         .get(format!("{}/app?as_user=100", stack.mock.base_url))
