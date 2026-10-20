@@ -595,9 +595,20 @@ pub fn discord_payload(view: &View) -> serde_json::Value {
     } else {
         0x5865f2
     };
+    // Discord caps: title 256, description 4096. A long case brief rides in
+    // the title verbatim, and one overlong brief poisons every live refresh.
+    // Truncate on chars, never split a UTF-8 boundary.
+    fn clip(s: &str, max: usize) -> String {
+        if s.chars().count() <= max {
+            return s.to_string();
+        }
+        let mut out: String = s.chars().take(max - 1).collect();
+        out.push('…');
+        out
+    }
     let embed = serde_json::json!({
-        "title": view.title,
-        "description": desc,
+        "title": clip(&view.title, 256),
+        "description": clip(&desc, 4096),
         "color": color,
         "fields": fields,
     });
@@ -677,6 +688,40 @@ mod tests {
         assert_eq!(case_channel_name(&id), "case-cheat-1");
         let id = CaseId::parse("Moderation/Slur").unwrap();
         assert_eq!(case_channel_name(&id), "case-moderation-slur");
+    }
+
+    #[test]
+    fn embed_title_clamped_to_discord_limit() {
+        // A 300-char brief rides the title verbatim; Discord 400s past 256
+        // and poisons every live refresh. The payload must clamp, never split UTF-8.
+        let view = View {
+            target: Target::Cite(Cite::Case { id: crate::ids::CaseId::parse("case-x").unwrap() }),
+            title: "ж".repeat(300),
+            title_testid: "case-title".into(),
+            lede: "#case-x".into(),
+            meta: vec!["y".repeat(5000)],
+            chips: vec![],
+            sections: vec![],
+            buttons: vec![],
+            verdict: None,
+            notice: None,
+            channel_url: None,
+            modal_ctx: ModalCtx::default(),
+            archive: None,
+        };
+        let payload = discord_payload(&view);
+        let embed = &payload["embeds"][0];
+        let title = embed["title"].as_str().unwrap();
+        let desc = embed["description"].as_str().unwrap();
+        assert!(title.chars().count() <= 256, "title {} chars", title.chars().count());
+        assert!(title.ends_with('…'));
+        assert!(desc.chars().count() <= 4096, "desc {} chars", desc.chars().count());
+        // Short titles pass through untouched.
+        let mut short = view.clone();
+        short.title = "Short brief".into();
+        short.meta.clear();
+        let embed2 = &discord_payload(&short)["embeds"][0];
+        assert_eq!(embed2["title"], "Short brief");
     }
 
     #[test]
