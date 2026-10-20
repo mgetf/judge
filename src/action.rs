@@ -99,7 +99,12 @@ impl Action {
                 outcome,
                 reason,
             },
-            Action::CloseCase { case } => Event::CaseClosed { ts, case, by: who },
+            Action::CloseCase { case } => Event::CaseClosed {
+                ts,
+                case,
+                by: who,
+                constitution: crate::events::CONSTITUTION,
+            },
         }
     }
 

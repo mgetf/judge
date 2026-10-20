@@ -9,13 +9,18 @@ Discord is the courtroom. Each case is a Ticket Tool–shaped ticket: a private
 channel under a court category, a pinned live `see` message that the bot edits
 in place, slash commands and buttons for every act, a two-step close, and an
 HTML transcript when the case ends. A small web app mirrors the same state for
-browsing the docket, cases, people, policies, and the raw event log.
+browsing the docket, cases, people, policies, and the raw event log. Like the
+ticket channels it mirrors, the web app is private: only people seated on the
+court (any mapped role, clerks included) can see it.
 
 ## Design stance
 
 - **The log is the history.** Events are appended to a JSONL file
   (`events.jsonl` in `JUDGE_DATA_DIR`). Every attempt is journaled, accepted or
-  rejected. Replaying the log rebuilds the entire state.
+  rejected: accepted events are written bare, rejected ones as
+  `{"rejected": <event>, "reason": "…"}`. Replaying the log rebuilds the entire
+  state, including the record of what was refused and why. Appends happen
+  under the same lock as the fold, so file order is fold order.
 - **The reducer is the constitution.** `src/reducer.rs` is the only authority
   on what is allowed. There is no side channel.
 - **A case is the unit of decision.** Cases move through explicit phases —
@@ -55,6 +60,21 @@ Each case has a `DecisionKind` that sets its quorum and margin
 Scoring is weighted plurality (`src/scoring.rs`). Exact ties always lapse. A
 case that fails quorum or margin closes as `lapsed`, without a verdict.
 
+Closing a case in deliberation needs either quorum or for the deliberation
+window (72h from when deliberation opened) to have run out. Before that, a
+close without quorum is rejected, so no single member can lapse a case before
+the bench has voted. Closes are stamped with the constitution version they were
+submitted under (`CaseClosed.constitution`); closes from older logs carry no
+stamp and replay under the rule they were accepted by.
+
+A successful appeal (`vacate` as the winning outcome id) marks the target
+`vacated`. If the target was a policy case, the policy version it enacted is
+removed, and a policy left with no versions stands repealed.
+
+`constitutional` cases currently set only the stricter quorum and margin; the
+rules themselves are constants in `src/types.rs`, so a constitutional verdict
+is a recorded decision that someone then implements in code.
+
 ## Discord UX
 
 The bot registers guild slash commands and drives the whole flow in Discord
@@ -88,6 +108,11 @@ OAuth login:
 - `/discord/interactions` — Discord interactions webhook (Ed25519-verified)
 - `/healthz` — health check
 
+Every page except login, the interactions webhook, and `/healthz` requires a
+Discord login by a seated member. Logged out gets 401, logged in without a seat
+gets 403. Sessions are signed cookies whose expiry (30 days) is inside the
+signed value.
+
 ## Running locally
 
 Requires Rust (see `rust-toolchain.toml`).
@@ -120,11 +145,11 @@ cargo run
 | `JUDGE_PUBLIC_URL` | Public base URL; `https://` enables secure cookies |
 | `JUDGE_DATA_DIR` | Directory for `events.jsonl` and Discord bindings |
 | `JUDGE_CONFIG` | Path to `config.json` |
-| `JUDGE_SESSION_SECRET` | HMAC secret for session cookies |
+| `JUDGE_SESSION_SECRET` | HMAC secret for session cookies. Required (32+ chars) when `JUDGE_PUBLIC_URL` is https |
 | `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET` | OAuth app credentials |
 | `DISCORD_REDIRECT_URI` | Defaults to `${JUDGE_PUBLIC_URL}/auth/discord/callback` |
 | `DISCORD_BOT_TOKEN` | Bot token; unset disables the Discord-side UX |
-| `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` | Interactions signature check; empty key skips verification (dev/mock) |
+| `DISCORD_PUBLIC_KEY` / `DISCORD_APPLICATION_ID` | Interactions signature check. Empty skips verification (dev/mock only); required when the bot is enabled and `JUDGE_PUBLIC_URL` is https |
 | `DISCORD_API_BASE` / `DISCORD_AUTHORIZE_URL` | Override to point at the mock Discord |
 
 ### Mock Discord
@@ -157,7 +182,9 @@ Chromium: `npx playwright@1.61.1 install chromium`). Reducer unit tests live in
 ## Deployment
 
 Pushes to `main` deploy to Fly.io via `.github/workflows/deploy.yml`
-(needs the `FLY_API_TOKEN` secret). `fly.toml` mounts a `judge_data` volume at
+(needs the `FLY_API_TOKEN` secret). Set `JUDGE_SESSION_SECRET` and `DISCORD_PUBLIC_KEY` as Fly secrets
+(`fly secrets set …`); the app refuses to boot on an https URL without them.
+`fly.toml` mounts a `judge_data` volume at
 `/data` for the event log, config, and Discord bindings, so the court's history
 survives deploys. The `Dockerfile` builds a slim release image.
 
@@ -171,5 +198,5 @@ survives deploys. The `Dockerfile` builds a slim release image.
 | `src/bot.rs` / `src/ticket.rs` | Discord-side UX: case channels, live views, transcripts |
 | `src/mock_discord.rs` | In-process Discord for dev and tests |
 | `tests/` | Integration tests against the judge + mock Discord stack |
-| `library.tdsl`, `seed.tdsl` | Design notes and seed docket |
+| `seed.tdsl` | Seed docket notes |
 | `from-thousand/`, root `*.rs` files | Reference material from a prior project; not part of the build |

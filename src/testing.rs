@@ -70,3 +70,58 @@ pub async fn start_stack() -> Result<Stack, Box<dyn std::error::Error>> {
         _data: data,
     })
 }
+
+/// Log `user_id` in through the real OAuth round trip against the mock and
+/// return a client that carries the judge session cookie.
+pub async fn login(
+    stack: &Stack,
+    user_id: &str,
+) -> Result<reqwest::Client, Box<dyn std::error::Error>> {
+    use reqwest::header::{COOKIE, LOCATION, SET_COOKIE};
+    let bare = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let first_cookie = |r: &reqwest::Response| -> Option<String> {
+        let raw = r.headers().get(SET_COOKIE)?.to_str().ok()?;
+        Some(raw.split(';').next()?.to_string())
+    };
+    let login = bare
+        .get(format!("{}/login", stack.judge_url))
+        .send()
+        .await?;
+    let state_cookie = first_cookie(&login).ok_or("no oauth state cookie")?;
+    let loc = login
+        .headers()
+        .get(LOCATION)
+        .ok_or("no login redirect")?
+        .to_str()?;
+    let state = url::Url::parse(loc)?
+        .query_pairs()
+        .find(|(k, _)| k == "state")
+        .map(|(_, v)| v.into_owned())
+        .ok_or("no state param")?;
+    let approve = bare
+        .get(format!(
+            "{}/oauth2/approve?user_id={user_id}&redirect_uri={}/auth/discord/callback&state={state}",
+            stack.mock.base_url, stack.judge_url
+        ))
+        .send()
+        .await?;
+    let callback = approve
+        .headers()
+        .get(LOCATION)
+        .ok_or("no approve redirect")?
+        .to_str()?
+        .to_string();
+    let cb = bare
+        .get(callback)
+        .header(COOKIE, state_cookie)
+        .send()
+        .await?;
+    let session = first_cookie(&cb).ok_or("no session cookie")?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(COOKIE, session.parse()?);
+    Ok(reqwest::Client::builder()
+        .default_headers(headers)
+        .build()?)
+}

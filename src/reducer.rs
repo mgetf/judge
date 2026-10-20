@@ -7,7 +7,10 @@ use crate::state::{
     Attempt, Ballot, BenchSeat, BenchSnapshot, Case, ClerkNote, Fold, Outcome, Policy,
     PolicyVersion, Principal, Statement, Verdict,
 };
-use crate::types::{response_window_ms, rules_for, DecisionKind, Hearing, Phase, Reject, Seat, Ts};
+use crate::types::{
+    response_window_ms, rules_for, DecisionKind, Hearing, Phase, Reject, Seat, Ts,
+    DELIBERATION_WINDOW_MS,
+};
 
 /// Materialized court. Fold events through [`Self::submit`]; the attempt
 /// journal is the history, including rejects.
@@ -62,6 +65,16 @@ impl GovState {
             fold: Fold::Accepted,
         });
         Ok(())
+    }
+
+    /// Boot replay of an attempt the reducer rejected when it was submitted.
+    /// Touches no state; restores the journal entry with its original reason.
+    pub fn replay_rejected(&mut self, ev: Event, reason: String) {
+        self.attempts.push(Attempt {
+            seq: self.attempts.len() as u64,
+            event: ev,
+            fold: Fold::Rejected(Reject::Recorded(reason)),
+        });
     }
 
     fn known(&self, p: &PrincipalId) -> Result<&Principal, Reject> {
@@ -345,8 +358,12 @@ impl GovState {
             Event::PolicyCited {
                 case, by, policy, ..
             } => {
-                if !self.principals.contains_key(&by) {
-                    return Err(Reject::UnknownPrincipal(by));
+                // Seated humans and clerks may cite; the policy must exist.
+                if !self.is_clerk(&by)? {
+                    self.sovereign(&by)?;
+                }
+                if !self.policies.contains_key(&policy) {
+                    return Err(Reject::UnknownPolicy(policy));
                 }
                 let case_id = case.clone();
                 let c =
@@ -492,7 +509,12 @@ impl GovState {
                 Ok(())
             }
 
-            Event::CaseClosed { ts, case, by } => {
+            Event::CaseClosed {
+                ts,
+                case,
+                by,
+                constitution,
+            } => {
                 // A justice frozen onto this bench may close even if they
                 // later lost the live Discord role.
                 let on_frozen_bench = self
@@ -511,10 +533,16 @@ impl GovState {
                     let scored = tally(&c.outcomes, &c.ballots);
                     let (margin, tied) = margin_of(&scored.ordering);
                     let winner_weight = scored.ordering.first().map(|(_, w)| *w).unwrap_or(0);
-                    let ok = quorum_met(scored.cast_weight, sitting_weight, r.quorum_weight_frac)
-                        && !tied
-                        && margin >= r.min_margin
-                        && winner_weight > 0;
+                    let has_quorum =
+                        quorum_met(scored.cast_weight, sitting_weight, r.quorum_weight_frac);
+                    if constitution >= 2 && !has_quorum {
+                        let opened = c.bench.as_ref().map(|b| b.ts).unwrap_or(ts);
+                        let opens_at = opened + DELIBERATION_WINDOW_MS;
+                        if ts < opens_at {
+                            return Err(Reject::TooEarlyToClose { opens_at });
+                        }
+                    }
+                    let ok = has_quorum && !tied && margin >= r.min_margin && winner_weight > 0;
                     if ok {
                         let v = Verdict {
                             ts,
@@ -564,6 +592,16 @@ impl GovState {
                         if let Some(t) = target {
                             if let Some(tc) = self.cases.get_mut(&t) {
                                 tc.phase = Phase::Vacated;
+                            }
+                            // A vacated policy verdict takes its enactment
+                            // with it. If nothing else enacted the policy, it
+                            // stands repealed.
+                            for p in self.policies.values_mut() {
+                                let before = p.versions.len();
+                                p.versions.retain(|v| v.enacted_by_case != t);
+                                if p.versions.len() != before && p.versions.is_empty() {
+                                    p.repealed = true;
+                                }
                             }
                         }
                     }

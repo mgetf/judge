@@ -234,6 +234,10 @@ pub const fn rules_for(kind: DecisionKind) -> Rules {
     }
 }
 
+/// How long deliberation stays open before a case may close without quorum
+/// (and lapse). Under constitution 2, closing earlier needs quorum.
+pub const DELIBERATION_WINDOW_MS: i64 = 72 * 3_600_000;
+
 /// Window the subject has to respond when a hearing is required.
 pub fn response_window_ms(kind: DecisionKind, hearing: Hearing) -> Option<i64> {
     if hearing != Hearing::Required {
@@ -338,6 +342,13 @@ pub enum Reject {
     EmptyBody,
     #[error("no voting bench to snapshot")]
     EmptyBench,
+    #[error("deliberation needs quorum before it can close; otherwise wait until {opens_at}")]
+    TooEarlyToClose { opens_at: Ts },
+    #[error("unknown policy {0}")]
+    UnknownPolicy(crate::ids::PolicyId),
+    /// A rejection read back from the log; the reason is as written then.
+    #[error("{0}")]
+    Recorded(String),
 }
 
 #[cfg(test)]

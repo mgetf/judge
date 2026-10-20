@@ -1,1 +1,1 @@
-pub use judge::testing::{example_config, start_stack, Stack};
+pub use judge::testing::{example_config, login, start_stack, Stack};

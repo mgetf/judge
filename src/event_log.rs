@@ -24,7 +24,17 @@ pub struct JsonlLog<E> {
     _marker: std::marker::PhantomData<E>,
 }
 
-pub type EventLog = JsonlLog<Event>;
+/// One line of `events.jsonl`. Accepted events are written bare (so logs from
+/// before rejects were persisted still parse); rejected attempts are wrapped
+/// with the reason the reducer gave at the time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum LogLine {
+    Rejected { rejected: Event, reason: String },
+    Accepted(Event),
+}
+
+pub type EventLog = JsonlLog<LogLine>;
 
 impl<E> JsonlLog<E>
 where
@@ -90,5 +100,38 @@ where
             }
         }
         Ok((events, bad))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ids::PrincipalId;
+
+    fn seen() -> Event {
+        Event::PrincipalSeen {
+            ts: 1,
+            id: PrincipalId::parse("100").unwrap(),
+            display_name: "t".into(),
+        }
+    }
+
+    #[test]
+    fn bare_events_still_parse_as_accepted() {
+        let line = serde_json::to_string(&seen()).unwrap();
+        let parsed: LogLine = serde_json::from_str(&line).unwrap();
+        assert_eq!(parsed, LogLine::Accepted(seen()));
+        let accepted = serde_json::to_string(&LogLine::Accepted(seen())).unwrap();
+        assert_eq!(accepted, line);
+    }
+
+    #[test]
+    fn rejected_lines_round_trip() {
+        let l = LogLine::Rejected {
+            rejected: seen(),
+            reason: "nope".into(),
+        };
+        let parsed: LogLine = serde_json::from_str(&serde_json::to_string(&l).unwrap()).unwrap();
+        assert_eq!(parsed, l);
     }
 }

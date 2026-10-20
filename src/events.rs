@@ -104,5 +104,17 @@ pub enum Event {
         ts: Ts,
         case: CaseId,
         by: PrincipalId,
+        /// Constitution the close was submitted under. Missing in older logs,
+        /// which read as 1 and replay under the rules they were accepted by.
+        #[serde(default = "legacy_constitution")]
+        constitution: u32,
     },
+}
+
+/// Current close rules. 2: a case in deliberation closes only once quorum is
+/// met or the deliberation window has run out (no one-person early lapse).
+pub const CONSTITUTION: u32 = 2;
+
+fn legacy_constitution() -> u32 {
+    1
 }
