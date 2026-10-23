@@ -43,6 +43,9 @@ court (any mapped role, clerks included) can see it.
 - **Everything has a stable link path** (`/cases/{id}`, `/people/{id}`,
   `/policies/{id}`, `/log`), so verdicts and policies are citable.
 
+The full operational semantics — the reducer written out as a fold with one
+reduction rule per event — is in [SEMANTICS.md](SEMANTICS.md).
+
 ## Decision kinds and rules
 
 Each case has a `DecisionKind` that sets its quorum and margin
