@@ -210,17 +210,26 @@ pub fn see_case(
         .map(|id| name_of(people, id))
         .unwrap_or_else(|| "—".into());
 
+    let scored = crate::scoring::tally(&case.outcomes, &case.ballots);
+    let weights: std::collections::HashMap<String, u64> = scored
+        .ordering
+        .iter()
+        .map(|(id, w)| (id.to_string(), *w))
+        .collect();
     let outcomes = Section {
         heading: "Outcomes".into(),
         testid: "outcome-list".into(),
         items: case
             .outcomes
             .values()
-            .map(|o| SectionItem {
-                id: o.id.to_string(),
-                testid: format!("outcome-{}", o.id),
-                text: format!("{} — {}", o.id, o.body),
-                href: None,
+            .map(|o| {
+                let w = weights.get(&o.id.to_string()).copied().unwrap_or(0);
+                SectionItem {
+                    id: o.id.to_string(),
+                    testid: format!("outcome-{}", o.id),
+                    text: format!("{} — {} · {w}", o.id, o.body),
+                    href: None,
+                }
             })
             .collect(),
         empty: "None proposed.",
